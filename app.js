@@ -2454,3 +2454,1508 @@ ${ord.notes ? `*ملاحظات:* ${ord.notes}` : ''}`;
   const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`;
   window.open(waUrl, '_blank');
 };
+/* =========================================================
+   المحرك البرمجي الشامل — الإصدار 1.8
+   File: app.js (الجزء 3-أ)
+   يشمل: تثبيت التطبيق (PWA)، المظهر الذكي، القصص المطورة (Stories 2.0)،
+         رفع الصور والغلاف، استوديو النشر، شجرة التعليقات، وبطاقة الاقتباس
+   ========================================================= */
+
+// =========================================================
+// 📲 محرك تثبيت التطبيق المباشر (PWA) والمظهر الذكي (تلقائي / ليلي / نهاري)
+// =========================================================
+function sqInitPWAAndOffline() {
+  window.sqRefreshPwaManifest();
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    AppState.deferredPwaPrompt = e;
+  });
+  const updateNetStatus = () => {
+    const bar = document.getElementById('sq-offline-bar');
+    if (bar) bar.style.display = navigator.onLine ? 'none' : 'flex';
+  };
+  window.addEventListener('online', updateNetStatus);
+  window.addEventListener('offline', updateNetStatus);
+  updateNetStatus();
+
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      if ((AppState.userData && AppState.userData.theme) === 'auto') {
+        window.sqApplyThemeMode('auto');
+      }
+    });
+  }
+}
+
+window.sqRefreshPwaManifest = function() {
+  try {
+    const manifestObj = {
+      name: APP_NAME,
+      short_name: APP_NAME,
+      description: APP_NAME + " — المتجر الرسمي للكتب والمجتمع الأدبي",
+      start_url: CURRENT_DOMAIN_ORIGIN + window.location.pathname,
+      display: "standalone",
+      background_color: "#0b1120",
+      theme_color: "#0b1120",
+      orientation: "portrait",
+      icons: [
+        { src: APP_LOGO_URL, sizes: "192x192", type: "image/jpeg" },
+        { src: APP_LOGO_URL, sizes: "512x512", type: "image/jpeg" }
+      ]
+    };
+    const blob = new Blob([JSON.stringify(manifestObj)], { type: 'application/json' });
+    const manifestEl = document.getElementById('sq-pwa-manifest');
+    if (manifestEl) manifestEl.href = URL.createObjectURL(blob);
+  } catch (e) {}
+};
+
+window.sqTriggerPwaInstall = async function() {
+  if (AppState.deferredPwaPrompt) {
+    AppState.deferredPwaPrompt.prompt();
+    const { outcome } = await AppState.deferredPwaPrompt.userChoice;
+    if (outcome === 'accepted') {
+      AppState.deferredPwaPrompt = null;
+      sqShowToast("جاري تثبيت تطبيق " + APP_NAME + " على جهازك!", "success");
+    }
+    return;
+  }
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  if (isIOS) {
+    sqShowToast("لتثبيت التطبيق على آيفون: اضغط أيقونة المشاركة في المتصفح ثم اختر (إضافة إلى الشاشة الرئيسية)", "warning");
+  } else {
+    sqShowToast("لتثبيت التطبيق فوراً: افتح قائمة المتصفح العلوية (⋮) واختر (تثبيت التطبيق / الإضافة إلى الشاشة الرئيسية)", "warning");
+  }
+};
+
+window.sqApplyThemeMode = function(mode) {
+  const cleanMode = mode || localStorage.getItem('sq_theme_pref') || 'light';
+  localStorage.setItem('sq_theme_pref', cleanMode);
+  if (cleanMode === 'dark') {
+    document.body.classList.add('sq-dark-mode');
+  } else if (cleanMode === 'light') {
+    document.body.classList.remove('sq-dark-mode');
+  } else {
+    const sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.body.classList.toggle('sq-dark-mode', Boolean(sysDark));
+  }
+};
+
+window.sqSetThemeMode = function(mode) {
+  AppState.userData.theme = mode;
+  window.sqApplyThemeMode(mode);
+  if (AppState.currentUser) {
+    db.collection("safaqat_users").doc(AppState.currentUser.uid).update({ theme: mode }).catch(() => {});
+  }
+  if (AppState.activeMainView === 'settings_page') window.sqRenderSettingsPage();
+  sqShowToast("تم تحديث مظهر المنصة", "success");
+};
+
+window.sqSetFontSize = function(size) {
+  document.documentElement.style.setProperty('--post-font-size', size);
+  AppState.userData.fontSize = size;
+  if (AppState.currentUser) {
+    db.collection("safaqat_users").doc(AppState.currentUser.uid).update({ fontSize: size }).catch(() => {});
+  }
+  if (AppState.activeMainView === 'settings_page') window.sqRenderSettingsPage();
+  sqShowToast("تم ضبط حجم خط القراءة", "success");
+};
+
+// =========================================================
+// 🏅 حساب المتابعين والمستويات وحالة الاتصال
+// =========================================================
+window.sqGetFollowersList = function(targetUid) {
+  const list = [];
+  Object.keys(AppState.allUsers).forEach(uid => {
+    if (uid === targetUid) return;
+    const u = AppState.allUsers[uid] || {};
+    if ((u.following || []).includes(targetUid) || (u.friends || []).includes(targetUid)) {
+      list.push(uid);
+    }
+  });
+  return list;
+};
+
+window.sqGetFollowingList = function(targetUid) {
+  const u = AppState.allUsers[targetUid] || {};
+  const set = new Set([...(u.following || []), ...(u.friends || [])]);
+  set.delete(targetUid);
+  return Array.from(set);
+};
+
+window.sqGetUserLevelInfo = function(uid) {
+  const userPosts = AppState.posts.filter(p => p.uid === uid && !p.isAnon);
+  const postsCount = userPosts.length;
+  const likesReceived = userPosts.reduce((s, p) => s + ((p.likes || []).length), 0);
+  const viewsReceived = userPosts.reduce((s, p) => s + (p.views || 1), 0);
+  const followersCount = window.sqGetFollowersList(uid).length;
+  let commentsCount = 0;
+  AppState.posts.forEach(p => { (p.comments || []).forEach(c => { if (c.uid === uid) commentsCount++; }); });
+  const pts = (postsCount * 12) + (likesReceived * 3) + (commentsCount * 4) + (followersCount * 5);
+
+  const levels = [
+    { lvl: 1, title: 'قارئ شغوف', tier: 'برونزي', iconHtml: '<i class="fa-solid fa-seedling" style="color:#b45309;"></i>', min: 0, next: 60 },
+    { lvl: 2, title: 'قلم واعد', tier: 'فضي', iconHtml: '<i class="fa-solid fa-feather" style="color:#64748b;"></i>', min: 60, next: 180 },
+    { lvl: 3, title: 'أديب متألق', tier: 'ذهبي', iconHtml: '<i class="fa-solid fa-trophy" style="color:#d4af37;"></i>', min: 180, next: 400 },
+    { lvl: 4, title: 'حكيم المجتمع', tier: 'ألماسي', iconHtml: '<i class="fa-solid fa-gem" style="color:#0284c7;"></i>', min: 400, next: 800 },
+    { lvl: 5, title: 'عميد صفقات', tier: 'ملكي', iconHtml: '<i class="fa-solid fa-crown" style="color:#9333ea;"></i>', min: 800, next: 2000 }
+  ];
+  let cur = levels[0];
+  for (let i = 0; i < levels.length; i++) { if (pts >= levels[i].min) cur = levels[i]; }
+  const progress = cur.lvl === 5 ? 100 : Math.min(100, Math.round(((pts - cur.min) / (cur.next - cur.min)) * 100));
+  const remaining = Math.max(0, cur.next - pts);
+  return { ...cur, pts, progress, remaining, postsCount, likesReceived, viewsReceived, followersCount };
+};
+
+window.sqIsUserOnline = function(uid) {
+  const u = AppState.allUsers[uid];
+  if (!u || u.showOnline === false || !u.lastActive) return false;
+  return (Date.now() - u.lastActive) < 270000;
+};
+
+window.sqGetOnlineStatusText = function(uid) {
+  const u = AppState.allUsers[uid];
+  if (!u || u.showOnline === false || !u.lastActive) return 'عضو في ' + APP_NAME;
+  if (window.sqIsUserOnline(uid)) return 'متصل الآن';
+  return 'آخر ظهور ' + sqFormatRelativeTime(u.lastActive);
+};
+
+window.sqIsBirthdayToday = function(bdayStr) {
+  if (!bdayStr) return false;
+  const parts = bdayStr.split('-');
+  if (parts.length < 3) return false;
+  const now = new Date();
+  return (parseInt(parts[1], 10) === (now.getMonth() + 1)) && (parseInt(parts[2], 10) === now.getDate());
+};
+
+// =========================================================
+// ⚡ محرك القصص المطور (Stories 2.0 — يظهر للإدارة إلزامياً + لمن تتابعهم فقط)
+// =========================================================
+window.sqUserHasActiveStory = function(uid) {
+  return Boolean(uid && AppState.groupedStories[uid] && AppState.groupedStories[uid].length > 0);
+};
+
+window.sqListenStories = function() {
+  if (AppState.storiesUnsubscribe) AppState.storiesUnsubscribe();
+  AppState.storiesUnsubscribe = db.collection("safaqat_stories").orderBy("time", "asc").limit(50).onSnapshot(snap => {
+    const now = Date.now();
+    AppState.storiesList = [];
+    AppState.groupedStories = {};
+    snap.forEach(doc => {
+      const d = doc.data();
+      if (d.expiresAt && now > d.expiresAt) {
+        if (AppState.isAdmin || (AppState.currentUser && d.uid === AppState.currentUser.uid)) {
+          db.collection("safaqat_stories").doc(doc.id).delete().catch(() => {});
+        }
+      } else {
+        const stObj = { id: doc.id, ...d };
+        AppState.storiesList.push(stObj);
+        if (!AppState.groupedStories[d.uid]) AppState.groupedStories[d.uid] = [];
+        AppState.groupedStories[d.uid].push(stObj);
+      }
+    });
+    window.sqRenderStoriesBar();
+  }, err => {});
+};
+
+window.sqRenderStoriesBar = function() {
+  const bar = document.getElementById('sq-stories-bar');
+  if (!bar) return;
+  const myUid = AppState.currentUser ? AppState.currentUser.uid : null;
+  const myBlocked = (AppState.userData && AppState.userData.blockedUsers) ? AppState.userData.blockedUsers : [];
+  const myFollowing = (AppState.userData && AppState.userData.following) ? AppState.userData.following : [];
+
+  const visibleStoryUids = Object.keys(AppState.groupedStories).filter(uid => {
+    if (myBlocked.includes(uid)) return false;
+    const userStories = AppState.groupedStories[uid] || [];
+    const isAdm = sqIsAdminUid(uid) || userStories.some(s => s.isAdminStory);
+    if (isAdm) return true;
+    if (myUid && uid === myUid) return true;
+    if (myUid && myFollowing.includes(uid)) return true;
+    return false;
+  });
+
+  visibleStoryUids.sort((a, b) => {
+    if (a === myUid) return -1;
+    if (b === myUid) return 1;
+    const aAdm = sqIsAdminUid(a) || (AppState.groupedStories[a] || []).some(s => s.isAdminStory);
+    const bAdm = sqIsAdminUid(b) || (AppState.groupedStories[b] || []).some(s => s.isAdminStory);
+    if (aAdm && !bAdm) return -1;
+    if (!aAdm && bAdm) return 1;
+    return 0;
+  });
+
+  let html = `
+    <div class="sq-story-item" onclick="window.sqOpenStoryModal()">
+      <div class="sq-story-ring add-ring">
+        <div style="width:100%; height:100%; border-radius:50%; display:flex; align-items:center; justify-content:center; color:var(--accent); font-size:20px;"><i class="fa-solid fa-plus"></i></div>
+      </div>
+      <span class="sq-story-name">أضف قصتك</span>
+    </div>
+  `;
+
+  visibleStoryUids.forEach(uid => {
+    const userStories = AppState.groupedStories[uid];
+    const latest = userStories[userStories.length - 1];
+    const isAdm = sqIsAdminUid(uid) || userStories.some(s => s.isAdminStory);
+    const authorName = escapeHtml(uid === myUid ? 'قصتي' : getRealName(uid, latest.authorName));
+    const avatar = getRealPhoto(uid, latest.authorPhoto);
+    html += `
+      <div class="sq-story-item" onclick="window.sqOpenUserStories('${uid}', 0)">
+        <div class="sq-story-ring ${isAdm ? 'admin-ring' : ''}">
+          <img src="${avatar}" loading="lazy">
+          ${isAdm ? `<span class="sq-story-count-badge" style="background:var(--danger); color:#fff;" title="قصة رسمية من الإدارة"><i class="fa-solid fa-check" style="font-size:9px;"></i></span>` : (userStories.length > 1 ? `<span class="sq-story-count-badge">${userStories.length}</span>` : '')}
+        </div>
+        <span class="sq-story-name">${authorName}</span>
+      </div>
+    `;
+  });
+  bar.innerHTML = html;
+};
+
+window.sqOpenStoryModal = function() {
+  if (!AppState.currentUser) { sqShowToast("سجل دخولك أولاً لإضافة قصة يومية", "warning"); return window.sqLogin(); }
+  if (AppState.userData.isMuted && !AppState.isAdmin) return sqShowToast("حسابك مقيد من النشر حالياً", "danger");
+  AppState.pendingStoryImg = '';
+  document.getElementById('sq-story-text-in').value = '';
+  document.getElementById('sq-story-upload-status').innerHTML = 'إرفاق صورة للقصة (اختياري)';
+  window.sqSwitchMainView('story_publish');
+};
+
+window.sqHandleStoryImageUpload = async function(inputEl) {
+  if (!inputEl.files || !inputEl.files[0]) return;
+  const statusEl = document.getElementById('sq-story-upload-status');
+  const btn = document.getElementById('sq-story-pub-btn');
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin" style="color:var(--accent);"></i> جاري ضغط ورفع الصورة...';
+  try {
+    AppState.pendingStoryImg = await window.sqCompressAndUploadToImgBB(inputEl.files[0], 900, 0.78);
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--success);"><i class="fa-solid fa-check-circle"></i> تم تجهيز صورة القصة!</span>';
+  } catch (e) {
+    sqShowToast("تعذر رفع صورة القصة", "danger");
+  }
+  if (btn) btn.disabled = false;
+};
+
+window.sqPublishStory = function() {
+  const text = document.getElementById('sq-story-text-in').value.trim();
+  const bgTheme = document.getElementById('sq-story-bg-select').value;
+  if (!text && !AppState.pendingStoryImg) return sqShowToast("يرجى كتابة نص أو رفع صورة للقصة", "warning");
+  db.collection("safaqat_stories").add({
+    uid: AppState.currentUser.uid,
+    isAdminStory: Boolean(AppState.isAdmin),
+    authorName: getRealName(AppState.currentUser.uid, AppState.currentUser.displayName),
+    authorPhoto: getRealPhoto(AppState.currentUser.uid, AppState.currentUser.photoURL),
+    text: text,
+    imageUrl: AppState.pendingStoryImg || '',
+    bgTheme: bgTheme,
+    views: 1,
+    time: Date.now(),
+    expiresAt: Date.now() + (24 * 60 * 60 * 1000)
+  }).then(() => {
+    window.sqSwitchMainView('community', true);
+    sqShowToast("تم نشر قصتك اليومية بنجاح!", "success");
+  });
+};
+
+window.sqOpenUserStories = function(uid, startIdx = 0) {
+  const list = AppState.groupedStories[uid];
+  if (!list || !list.length) return;
+  AppState.activeStoryUid = uid;
+  AppState.activeStoryIdx = Math.max(0, Math.min(startIdx, list.length - 1));
+  window.sqSwitchMainView('story_viewer');
+  window.sqRenderActiveStorySlide();
+};
+
+window.sqRenderActiveStorySlide = function() {
+  clearTimeout(AppState.storyTimer);
+  const list = AppState.groupedStories[AppState.activeStoryUid];
+  if (!list || !list[AppState.activeStoryIdx]) {
+    window.sqGoBackView();
+    return;
+  }
+  const st = list[AppState.activeStoryIdx];
+  const viewedKey = 'sq_st_v_' + st.id;
+  if (!sessionStorage.getItem(viewedKey)) {
+    sessionStorage.setItem(viewedKey, '1');
+    st.views = (st.views || 1) + 1;
+    db.collection("safaqat_stories").doc(st.id).update({ views: firebase.firestore.FieldValue.increment(1) }).catch(() => {});
+  }
+
+  const body = document.getElementById('sq-story-viewer-body');
+  const bgGrad = STORY_GRADIENTS[st.bgTheme || 'royal'] || STORY_GRADIENTS.royal;
+  body.style.background = bgGrad;
+  const isOwnerOrAdmin = (AppState.currentUser && st.uid === AppState.currentUser.uid) || AppState.isAdmin;
+  const authorName = escapeHtml(getRealName(st.uid, st.authorName));
+  const avatar = getRealPhoto(st.uid, st.authorPhoto);
+  const vBubble = window.sqGetVerificationBubble(st.uid, false, st.isAdminStory);
+
+  const segsHtml = list.map((item, idx) => {
+    const w = idx < AppState.activeStoryIdx ? '100%' : '0%';
+    return `<div class="sq-story-seg"><div class="sq-story-seg-fill" id="st-seg-${idx}" style="width:${w};"></div></div>`;
+  }).join('');
+
+  let mediaContent = '';
+  const ytMatch = (st.text || '').match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
+  if (ytMatch) {
+    const vidId = ytMatch[1];
+    mediaContent = `
+      <div style="width:100%; height:350px; border-radius:16px; overflow:hidden; margin:8px 0; position:relative; z-index:12; background:#000; border:1px solid rgba(212,175,55,0.4);" onclick="event.stopPropagation()">
+        <iframe src="https://www.youtube.com/embed/${vidId}?autoplay=1&playsinline=1&rel=0" style="width:100%; height:100%; border:none;" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+      </div>
+    `;
+  } else if (st.imageUrl) {
+    mediaContent = `<div style="text-align:center; margin:8px 0;"><img src="${escapeHtml(st.imageUrl)}" style="max-width:100%; max-height:50vh; border-radius:14px; object-fit:contain;"></div>`;
+  }
+
+  const cleanText = escapeHtml(decodeEntities(st.text || '').replace(/https?:\/\/[^\s]+/g, '').trim());
+
+  body.innerHTML = `
+    <div>
+      <div class="sq-story-progress-row">${segsHtml}</div>
+      <div style="display:flex; justify-content:space-between; align-items:center; z-index:12; position:relative;">
+        <div style="display:flex; align-items:center; gap:10px; cursor:pointer;" onclick="event.stopPropagation(); clearTimeout(AppState.storyTimer); window.sqViewProfile('${st.uid}')">
+          <img src="${avatar}" style="width:42px; height:42px; border-radius:50%; border:2px solid #fbbf24; object-fit:cover;">
+          <div>
+            <div style="font-weight:900; font-size:14px; color:#fff; display:flex; align-items:center; gap:5px;">${authorName} ${vBubble}</div>
+            <div style="font-size:11px; color:rgba(255,255,255,0.75);">${sqFormatRelativeTime(st.time)} • <i class="fa-regular fa-eye"></i> ${st.views || 1}</div>
+          </div>
+        </div>
+        <div style="display:flex; gap:6px;">
+          ${isOwnerOrAdmin ? `<button class="sq-back-pill" style="background:rgba(239,68,68,0.3); color:#fff; border:none;" onclick="event.stopPropagation(); window.sqDeleteStory('${st.id}')"><i class="fa-solid fa-trash"></i></button>` : ''}
+          <button class="sq-back-pill" style="background:rgba(255,255,255,0.18); color:#fff; border:none;" onclick="event.stopPropagation(); clearTimeout(AppState.storyTimer); window.sqGoBackView()"><i class="fa-solid fa-xmark"></i> إغلاق</button>
+        </div>
+      </div>
+    </div>
+    <div style="position:absolute; top:70px; bottom:55px; right:0; width:35%; z-index:8; cursor:pointer;" onclick="window.sqStepStory(-1)"></div>
+    <div style="position:absolute; top:70px; bottom:55px; left:0; width:65%; z-index:8; cursor:pointer;" onclick="window.sqStepStory(1)"></div>
+    <div style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:14px 6px; z-index:5;">
+      ${mediaContent}
+      ${cleanText ? `<div style="font-family:'Amiri','Tajawal',serif; font-size:22px; font-weight:bold; text-align:center; line-height:1.9; color:#fff; white-space:pre-wrap;">${cleanText}</div>` : ''}
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; color:rgba(255,255,255,0.8); z-index:12;">
+      <span>القصة ${AppState.activeStoryIdx + 1} من ${list.length}</span>
+      <span style="color:#fbbf24; font-weight:800; cursor:pointer;" onclick="event.stopPropagation(); window.sqStepStory(1)">التالي <i class="fa-solid fa-chevron-left"></i></span>
+    </div>
+  `;
+
+  const activeSeg = document.getElementById('st-seg-' + AppState.activeStoryIdx);
+  if (!ytMatch) {
+    if (activeSeg) setTimeout(() => { activeSeg.style.transition = 'width 6s linear'; activeSeg.style.width = '100%'; }, 30);
+    AppState.storyTimer = setTimeout(() => window.sqStepStory(1), 6100);
+  } else {
+    if (activeSeg) activeSeg.style.width = '100%';
+  }
+};
+
+window.sqStepStory = function(dir) {
+  clearTimeout(AppState.storyTimer);
+  const list = AppState.groupedStories[AppState.activeStoryUid] || [];
+  const nextIdx = AppState.activeStoryIdx + dir;
+  if (nextIdx >= 0 && nextIdx < list.length) {
+    AppState.activeStoryIdx = nextIdx;
+    window.sqRenderActiveStorySlide();
+  } else {
+    window.sqGoBackView();
+  }
+};
+
+window.sqDeleteStory = function(storyId) {
+  if (!confirm("حذف هذه القصة اليومية؟")) return;
+  clearTimeout(AppState.storyTimer);
+  db.collection("safaqat_stories").doc(storyId).delete().then(() => {
+    window.sqGoBackView();
+    sqShowToast("تم حذف القصة", "success");
+  });
+};
+
+// =========================================================
+// 🖼️ دوال القوائم، الوسائط، ورفع الصور والغلاف
+// =========================================================
+window.sqCloseAllMenus = function() {
+  document.querySelectorAll('.sq-dropdown').forEach(d => d.style.display = 'none');
+  document.querySelectorAll('.sq-post.menu-open').forEach(p => p.classList.remove('menu-open'));
+};
+
+window.sqTogglePostMenu = function(e, postId) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }
+  const drop = document.getElementById(`drop-${postId}`);
+  const postEl = document.getElementById(`post-${postId}`);
+  if (!drop) return;
+  const isOpen = drop.style.display === 'flex';
+  window.sqCloseAllMenus();
+  if (!isOpen) { drop.style.display = 'flex'; if (postEl) postEl.classList.add('menu-open'); }
+};
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.sq-menu')) window.sqCloseAllMenus();
+});
+
+window.sqActivateYoutubeFacade = function(el, videoId, e) {
+  if (e) e.stopPropagation();
+  el.className = 'sq-yt-facade sq-active-yt-frame';
+  el.setAttribute('data-ytid', videoId);
+  el.innerHTML = `<iframe src="https://www.youtube.com/embed/${videoId}?autoplay=1&playsinline=1&rel=0" style="position:absolute; top:0; left:0; width:100%; height:100%; border:none;" allow="autoplay; encrypted-media" allowfullscreen></iframe>`;
+};
+
+window.sqDownloadDirectImage = async function(imgUrl, e) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }
+  if (!imgUrl) return;
+  sqShowToast("جاري تجهيز الصورة للتحميل...", "success");
+  try {
+    const res = await fetch(imgUrl);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `safaqat-img-${Date.now()}.jpg`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    window.open(imgUrl, '_blank');
+  }
+};
+
+window.sqScrollCarousel = function(trackId, dir, e) {
+  if (e) e.stopPropagation();
+  const track = document.getElementById(trackId);
+  if (!track) return;
+  track.scrollBy({ left: dir * track.clientWidth, behavior: 'smooth' });
+};
+
+window.sqUpdateCarouselCounter = function(trackEl, counterId) {
+  const cEl = document.getElementById(counterId);
+  if (!cEl || !trackEl) return;
+  const total = trackEl.children.length;
+  const idx = Math.min(total, Math.max(1, Math.round(Math.abs(trackEl.scrollLeft) / trackEl.clientWidth) + 1));
+  cEl.innerText = `${idx} / ${total}`;
+};
+
+window.sqRenderPendingPostImages = function() {
+  const grid = document.getElementById('sq-multi-preview-grid');
+  const statusEl = document.getElementById('sq-upload-status-text');
+  if (!grid) return;
+  if (!AppState.pendingPostImages.length) {
+    grid.innerHTML = '';
+    if (statusEl) statusEl.innerHTML = 'إرفاق صور مع المنشور (حتى 10 صور)';
+    return;
+  }
+  if (statusEl) statusEl.innerHTML = `<span style="color:var(--success);"><i class="fa-solid fa-images"></i> تم تجهيز (${AppState.pendingPostImages.length} / 10) صور</span>`;
+  grid.innerHTML = AppState.pendingPostImages.map((url, idx) => `
+    <div class="sq-multi-thumb">
+      <img src="${escapeHtml(url)}">
+      <button type="button" onclick="window.sqRemovePendingImage(${idx})"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+  `).join('');
+};
+
+window.sqRemovePendingImage = function(idx) {
+  AppState.pendingPostImages.splice(idx, 1);
+  window.sqRenderPendingPostImages();
+};
+
+window.sqHandlePostImageSelect = async function(inputEl) {
+  if (!inputEl.files || !inputEl.files.length) return;
+  const files = Array.from(inputEl.files);
+  const remainingSlots = 10 - AppState.pendingPostImages.length;
+  if (remainingSlots <= 0) return sqShowToast("الحد الأقصى 10 صور في المنشور", "warning");
+  const filesToUpload = files.slice(0, remainingSlots);
+
+  const pubBtn = document.getElementById('sq-publish-btn');
+  const statusEl = document.getElementById('sq-upload-status-text');
+  AppState.isUploadingImage = true;
+  if (pubBtn) { pubBtn.disabled = true; pubBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> جاري الرفع...'; }
+
+  let uploadedCount = 0;
+  for (const file of filesToUpload) {
+    uploadedCount++;
+    if (statusEl) statusEl.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin" style="color:var(--accent);"></i> جاري رفع الصورة (${uploadedCount}/${filesToUpload.length})...`;
+    try {
+      const url = await window.sqCompressAndUploadToImgBB(file, 960, 0.78);
+      AppState.pendingPostImages.push(url);
+      window.sqRenderPendingPostImages();
+    } catch (err) {
+      sqShowToast("تعذر رفع إحدى الصور", "danger");
+    }
+  }
+  inputEl.value = '';
+  AppState.isUploadingImage = false;
+  if (pubBtn) { pubBtn.disabled = false; pubBtn.innerHTML = AppState.editingPostId ? '<i class="fa-solid fa-save"></i> حفظ التعديل' : '<i class="fa-solid fa-paper-plane"></i> نشر المساهمة'; }
+};
+
+window.sqHandleAvatarUpload = async function(inputEl) {
+  if (!inputEl.files || !inputEl.files[0] || !AppState.currentUser) return;
+  sqShowToast("جاري تحديث صورتك الشخصية...", "warning");
+  try {
+    const newAvatarUrl = await window.sqCompressAndUploadToImgBB(inputEl.files[0], 420, 0.82);
+    await db.collection("safaqat_users").doc(AppState.currentUser.uid).update({ photoURL: newAvatarUrl });
+    if (AppState.allUsers[AppState.currentUser.uid]) AppState.allUsers[AppState.currentUser.uid].photoURL = newAvatarUrl;
+    sqShowToast("تم تحديث صورتك الشخصية!", "success");
+    window.sqRenderProfilePage(); window.sqRenderFeed(true);
+  } catch (err) { sqShowToast("تعذر رفع الصورة الشخصية", "danger"); }
+};
+
+window.sqHandleBookCoverUpload = async function(inputEl) {
+  if (!inputEl.files || !inputEl.files[0]) return;
+  const statusEl = document.getElementById('sq-book-cover-status');
+  const prevImg = document.getElementById('sq-studio-cover-prev');
+  if (statusEl) statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin" style="color:var(--accent);"></i> جاري رفع الغلاف...';
+  try {
+    AppState.pendingBookCover = await window.sqCompressAndUploadToImgBB(inputEl.files[0], 680, 0.82);
+    if (prevImg) prevImg.src = AppState.pendingBookCover;
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--success);"><i class="fa-solid fa-check-circle"></i> تم تجهيز غلاف الكتاب!</span>';
+  } catch (err) {
+    sqShowToast("تعذر رفع غلاف الكتاب", "danger");
+  }
+};
+
+function parseContent(text) {
+  let html = escapeHtml(text || '');
+  let embed = '';
+  const ytRegex = /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})([^\s]*)/i;
+  const ytMatch = html.match(ytRegex);
+  if (ytMatch) {
+    const vid = ytMatch[1];
+    embed += `<div class="sq-yt-facade" onclick="window.sqActivateYoutubeFacade(this, '${vid}', event)" title="تشغيل الفيديو"><img src="https://i.ytimg.com/vi/${vid}/hqdefault.jpg" loading="lazy"><div class="sq-yt-play-btn"><i class="fa-solid fa-play"></i></div></div>`;
+    html = html.replace(ytMatch[0], '');
+  }
+  html = html.replace(/(https?:\/\/[^\s]+)/g, `<a href="$1" target="_blank" onclick="event.stopPropagation()" style="color:var(--accent); font-weight:bold; font-size:13px; margin-top:4px; display:inline-block; background:var(--bg); padding:5px 10px; border-radius:8px; border:1px solid var(--border); text-decoration:none;"><i class="fa-solid fa-link"></i> فتح الرابط المرفق</a>`);
+  return { textHtml: html.trim(), embedHtml: embed };
+}
+
+// =========================================================
+// ✍️ استوديو النشر الأدبي، الخلاصة، التعليقات، وبطاقة الاقتباس
+// =========================================================
+window.sqOnSearchInput = function() {
+  const val = document.getElementById('sq-search-input').value;
+  AppState.searchQuery = val.toLowerCase().trim();
+  document.getElementById('sq-search-clear-btn').style.display = AppState.searchQuery ? 'flex' : 'none';
+  if (AppState.searchQuery.length >= 3) window.SafaqatAI.trackSignal('search', AppState.searchQuery, 1);
+  AppState.renderedPostSignature = '';
+  window.sqRenderFeed(true);
+};
+
+window.sqClearSearch = function() {
+  document.getElementById('sq-search-input').value = '';
+  AppState.searchQuery = ''; AppState.activeCategoryFilter = null;
+  document.getElementById('sq-search-clear-btn').style.display = 'none';
+  AppState.renderedPostSignature = '';
+  window.sqRenderFeed(true);
+};
+
+window.sqFilterByCategory = function(catKey) {
+  window.sqSwitchMainView('community');
+  AppState.activeCategoryFilter = (AppState.activeCategoryFilter === catKey) ? null : catKey;
+  AppState.renderedPostSignature = '';
+  window.sqRenderFeed(true);
+};
+
+window.sqOpenPublishModal = function(postId = null, prelinkedBook = null) {
+  window.sqCloseAllMenus();
+  if (AppState.userData.isMuted && !AppState.isAdmin) return sqShowToast("حسابك مقيد من النشر حالياً", "danger");
+  const title = document.getElementById('sq-publish-title');
+  const btn = document.getElementById('sq-publish-btn');
+  const anonCheck = document.getElementById('sq-post-anon');
+  AppState.pendingPostImages = [];
+  AppState.linkedBookForPost = prelinkedBook || null;
+  window.sqRenderPendingPostImages();
+  document.getElementById('sq-post-book-picker-box').style.display = 'none';
+
+  if (postId && typeof postId === 'string') {
+    const post = AppState.posts.find(p => p.id === postId); if (!post) return;
+    document.getElementById('sq-post-text').value = decodeEntities(post.text || '');
+    document.getElementById('sq-meta-source').value = decodeEntities(post.source || '');
+    document.getElementById('sq-meta-book').value = decodeEntities(post.book || '');
+    document.getElementById('sq-post-category').value = post.category || 'literature';
+    document.getElementById('sq-post-align').value = post.textAlign || 'right';
+    document.getElementById('sq-post-comments-lock').value = post.commentsLocked ? 'locked' : 'open';
+    if (AppState.isAdmin) document.getElementById('sq-post-type-select').value = post.postType || 'normal';
+    if (anonCheck) { anonCheck.checked = post.isAnon; document.getElementById('sq-anon-text').style.color = post.isAnon ? 'var(--danger)' : 'var(--text-muted)'; }
+    if (Array.isArray(post.images) && post.images.length) AppState.pendingPostImages = [...post.images];
+    else if (post.imageUrl) AppState.pendingPostImages = [post.imageUrl];
+    if (post.linkedBookId) {
+      AppState.linkedBookForPost = AppState.booksList.find(b => b.id === post.linkedBookId) || null;
+    }
+    window.sqRenderPendingPostImages();
+    title.innerHTML = '<i class="fa-solid fa-pen" style="color:var(--accent);"></i> تعديل المساهمة الأدبية';
+    btn.innerHTML = '<i class="fa-solid fa-save"></i> حفظ التعديل';
+    AppState.editingPostId = postId;
+  } else {
+    document.getElementById('sq-post-text').value = localStorage.getItem('sq_draft_text') || '';
+    document.getElementById('sq-meta-source').value = prelinkedBook ? (prelinkedBook.authorName || '') : '';
+    document.getElementById('sq-meta-book').value = prelinkedBook ? (prelinkedBook.title || '') : '';
+    document.getElementById('sq-post-category').value = prelinkedBook ? 'quote' : 'literature';
+    document.getElementById('sq-post-align').value = prelinkedBook ? 'center' : 'right';
+    document.getElementById('sq-post-comments-lock').value = 'open';
+    if (AppState.isAdmin) document.getElementById('sq-post-type-select').value = 'normal';
+    if (anonCheck) { anonCheck.checked = false; document.getElementById('sq-anon-text').style.color = 'var(--text-muted)'; }
+    title.innerHTML = '<i class="fa-solid fa-feather-pointed" style="color:var(--accent);"></i> استوديو النشر الأدبي';
+    btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> نشر المساهمة';
+    AppState.editingPostId = null;
+  }
+  window.sqRenderLinkedBookInPostStudio();
+  window.sqSwitchMainView('publish_post');
+};
+
+window.sqRenderLinkedBookInPostStudio = function() {
+  const banner = document.getElementById('sq-post-linked-book-banner');
+  if (!banner) return;
+  if (!AppState.linkedBookForPost) {
+    banner.style.display = 'none';
+    banner.innerHTML = '';
+    return;
+  }
+  const b = AppState.linkedBookForPost;
+  banner.style.display = 'block';
+  banner.innerHTML = `
+    <div class="sq-attached-book-pill" style="cursor:default;">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <img src="${escapeHtml(b.cover || APP_LOGO_URL)}" style="width:36px; height:50px; object-fit:cover; border-radius:6px; border:1px solid var(--accent);">
+        <div>
+          <div style="font-size:12.5px; font-weight:900; color:var(--text-main);">مرتبط بكتاب: ${escapeHtml(b.title)}</div>
+          <div style="font-size:11px; color:var(--text-muted);">سيظهر منشورك أيضاً داخل صفحة هذا الكتاب في المتجر</div>
+        </div>
+      </div>
+      <button type="button" style="background:none; border:none; color:var(--danger); cursor:pointer; font-size:12px; font-weight:bold;" onclick="AppState.linkedBookForPost=null; window.sqRenderLinkedBookInPostStudio();">إلغاء الربط</button>
+    </div>
+  `;
+};
+
+window.sqOpenBookSelectorForPost = function() {
+  const box = document.getElementById('sq-post-book-picker-box');
+  if (!box) return;
+  if (box.style.display === 'block') { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  if (!AppState.booksList.length) {
+    box.innerHTML = `<div style="font-size:12px; color:var(--text-muted); text-align:center;">لا توجد كتب مضافة في المتجر حالياً، يمكنك كتابة اسم الكتاب يدوياً بالأسفل.</div>`;
+    return;
+  }
+  box.innerHTML = `
+    <div style="font-size:12px; font-weight:800; margin-bottom:6px; color:var(--text-main);">اختر كتاباً من المتجر لربط منشورك به:</div>
+    <div style="max-height:170px; overflow-y:auto; display:flex; flex-direction:column; gap:5px;">
+      ${AppState.booksList.map(b => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 10px; background:var(--card); border:1px solid var(--border); border-radius:10px; cursor:pointer;" onclick="window.sqSelectBookForPost('${b.id}')">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <img src="${escapeHtml(b.cover || APP_LOGO_URL)}" style="width:26px; height:36px; object-fit:cover; border-radius:4px;">
+            <span style="font-size:12.5px; font-weight:800;">${escapeHtml(b.title)} <small style="color:var(--text-muted);">— ${escapeHtml(b.authorName || '')}</small></span>
+          </div>
+          <span style="font-size:11px; color:var(--accent); font-weight:900;">اختيار</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+};
+
+window.sqSelectBookForPost = function(bookId) {
+  const b = AppState.booksList.find(x => x.id === bookId);
+  if (!b) return;
+  AppState.linkedBookForPost = b;
+  document.getElementById('sq-meta-book').value = decodeEntities(b.title || '');
+  document.getElementById('sq-meta-source').value = decodeEntities(b.authorUid ? getRealName(b.authorUid, b.authorName) : (b.authorName || ''));
+  document.getElementById('sq-post-book-picker-box').style.display = 'none';
+  window.sqRenderLinkedBookInPostStudio();
+};
+
+window.sqPublish = function() {
+  if (AppState.isUploadingImage) return sqShowToast("يرجى الانتظار حتى يكتمل رفع الصور...", "warning");
+  if (AppState.userData.isMuted && !AppState.isAdmin) return sqShowToast("حسابك مقيد من النشر", "danger");
+  const text = document.getElementById('sq-post-text').value.trim();
+  if (!text && !AppState.pendingPostImages.length) return sqShowToast("يرجى كتابة نص أو إرفاق صورة للنشر", "warning");
+  const isAnon = document.getElementById('sq-post-anon').checked;
+  const category = document.getElementById('sq-post-category').value;
+  const textAlign = document.getElementById('sq-post-align').value;
+  const commentsLocked = document.getElementById('sq-post-comments-lock').value === 'locked';
+  let type = 'normal';
+  if (AppState.isAdmin && !isAnon) type = document.getElementById('sq-post-type-select').value || 'normal';
+
+  if (AppState.linkedBookForPost) window.SafaqatAI.trackSignal('book', AppState.linkedBookForPost, 4);
+
+  const postData = {
+    text: text,
+    images: AppState.pendingPostImages,
+    imageUrl: AppState.pendingPostImages[0] || '',
+    source: document.getElementById('sq-meta-source').value.trim(),
+    book: document.getElementById('sq-meta-book').value.trim(),
+    linkedBookId: AppState.linkedBookForPost ? AppState.linkedBookForPost.id : '',
+    category: category,
+    textAlign: textAlign,
+    commentsLocked: commentsLocked,
+    isAnon: isAnon,
+    isAdminPost: AppState.isAdmin,
+    postType: type,
+    authorName: isAnon ? "كاتب مجهول" : getRealName(AppState.currentUser.uid, AppState.currentUser.displayName),
+    authorPhoto: isAnon ? ANON_PIC : getRealPhoto(AppState.currentUser.uid, AppState.currentUser.photoURL)
+  };
+  AppState.renderedPostSignature = '';
+  localStorage.removeItem('sq_draft_text');
+  if (AppState.editingPostId) {
+    db.collection("safaqat_quotes").doc(AppState.editingPostId).update(postData).then(() => {
+      sqShowToast("تم حفظ التعديلات", "success");
+      window.sqSwitchMainView('community', true);
+    });
+  } else {
+    postData.uid = AppState.currentUser.uid;
+    postData.likes = [];
+    postData.comments = [];
+    postData.views = 1;
+    postData.timestamp = firebase.firestore.FieldValue.serverTimestamp();
+    db.collection("safaqat_quotes").add(postData).then(() => {
+      sqShowToast("تم نشر مساهمتك بنجاح!", "success");
+      window.sqSwitchMainView('community', true);
+    });
+  }
+};
+
+window.sqDeletePost = function(id) {
+  window.sqCloseAllMenus();
+  if (!confirm("حذف نهائي للمنشور؟")) return;
+  AppState.renderedPostSignature = '';
+  db.collection("safaqat_quotes").doc(id).delete().then(() => {
+    sqShowToast("تم حذف المنشور", "success");
+    if (AppState.activeMainView === 'single_post' && AppState.viewingPostId === id) window.sqSwitchMainView('community', true);
+  });
+};
+
+window.sqToggleCommentsLock = function(id, currentLocked) {
+  window.sqCloseAllMenus();
+  db.collection("safaqat_quotes").doc(id).update({ commentsLocked: !currentLocked }).then(() => sqShowToast(!currentLocked ? "تم إغلاق التعليقات" : "تم فتح التعليقات", "success"));
+};
+
+window.sqReportPost = function(id) {
+  window.sqCloseAllMenus();
+  if (!AppState.currentUser) return sqShowToast("سجل دخولك أولاً للإبلاغ", "warning");
+  const post = AppState.posts.find(p => p.id === id); if (!post) return;
+  window.sqOpenCustomPrompt("اذكر سبب الإبلاغ للإدارة والمشرفين:", "", (reason) => {
+    db.collection("safaqat_reports").add({
+      postId: id, postSnippet: decodeEntities(post.text || 'منشور مصور').substring(0, 180), postAuthorUid: post.uid,
+      reporterUid: AppState.currentUser.uid, reason: reason || 'مخالفة القوانين', time: Date.now()
+    }).then(() => sqShowToast("تم إرسال البلاغ لقسم الرقابة", "success"));
+  });
+};
+
+window.sqOpenShareModal = function(postId) {
+  window.sqCloseAllMenus();
+  AppState.sharingPostId = postId; AppState.shareCardTheme = 'royal';
+  const post = AppState.posts.find(p => p.id === postId); if (!post) return;
+  const postLink = `${CURRENT_DOMAIN_ORIGIN}${window.location.pathname}?post=${postId}`;
+  const author = post.isAnon ? "كاتب مجهول" : getRealName(post.uid, post.authorName);
+  const shareText = `"${decodeEntities(post.text || '').substring(0, 180)}"\n— بقلم: ${author} | عبر ${APP_NAME}\n${postLink}`;
+  const encText = encodeURIComponent(shareText); const encUrl = encodeURIComponent(postLink);
+  document.getElementById('sq-social-share-links').innerHTML = `
+    <a href="https://api.whatsapp.com/send?text=${encText}" target="_blank" class="sq-social-btn"><i class="fa-brands fa-whatsapp" style="font-size:19px; color:#25D366;"></i> واتساب</a>
+    <a href="https://t.me/share/url?url=${encUrl}&text=${encodeURIComponent(decodeEntities(post.text || '').substring(0, 140))}" target="_blank" class="sq-social-btn"><i class="fa-brands fa-telegram" style="font-size:19px; color:#0088cc;"></i> تليجرام</a>
+    <a href="https://twitter.com/intent/tweet?text=${encText}" target="_blank" class="sq-social-btn"><i class="fa-brands fa-x-twitter" style="font-size:19px; color:var(--text-main);"></i> منصة X</a>
+    <button class="sq-social-btn" onclick="window.sqNativeShare('${postId}')"><i class="fa-solid fa-share-nodes" style="font-size:19px; color:var(--accent);"></i> مشاركة</button>
+  `;
+  window.sqSwitchMainView('share_page');
+  setTimeout(() => window.sqRenderShareCanvas('royal'), 50);
+};
+
+window.sqOpenLikesModal = function(postId) {
+  const post = AppState.posts.find(p => p.id === postId); if (!post) return;
+  const likes = post.likes || [];
+  document.getElementById('sq-users-list-title').innerHTML = `<i class="fa-solid fa-heart" style="color:var(--danger);"></i> المعجبون بالمساهمة (${likes.length})`;
+  window.sqRenderUsersListView(likes);
+};
+
+window.sqOpenUsersListView = function(type) {
+  const uid = AppState.viewedProfileUid; if (!uid) return;
+  const list = type === 'followers' ? window.sqGetFollowersList(uid) : window.sqGetFollowingList(uid);
+  document.getElementById('sq-users-list-title').innerHTML = `<i class="fa-solid fa-users" style="color:var(--accent);"></i> ${type === 'followers' ? 'المتابعون' : 'يتابع'} (${list.length})`;
+  window.sqRenderUsersListView(list);
+};
+
+window.sqRenderUsersListView = function(uidsList) {
+  const body = document.getElementById('sq-users-list-body');
+  if (!uidsList.length) body.innerHTML = `<p style="text-align:center; padding:25px; color:var(--text-muted);">القائمة فارغة حالياً.</p>`;
+  else {
+    body.innerHTML = uidsList.map(uid => {
+      const u = AppState.allUsers[uid] || {};
+      const name = escapeHtml(getRealName(uid, u.displayName)); const photo = getRealPhoto(uid, u.photoURL);
+      return `<div style="display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:14px; cursor:pointer;" onclick="window.sqViewProfile('${uid}')"><div style="display:flex; align-items:center; gap:10px;"><img src="${photo}" style="width:38px; height:38px; border-radius:50%; object-fit:cover;"><div><div style="font-weight:800; font-size:13.5px;">${name} ${window.getUserBadges(uid, false, false)}</div><div style="font-size:11px; color:var(--text-muted);">${escapeHtml(u.statusText || 'عضو في ' + APP_NAME)}</div></div></div><i class="fa-solid fa-chevron-left" style="font-size:11px; color:var(--text-muted);"></i></div>`;
+    }).join('');
+  }
+  window.sqSwitchMainView('users_list');
+};
+
+window.sqNativeShare = function(postId) {
+  const post = AppState.posts.find(p => p.id === postId); if (!post) return;
+  const postLink = `${CURRENT_DOMAIN_ORIGIN}${window.location.pathname}?post=${postId}`;
+  if (navigator.share) navigator.share({ title: APP_NAME, text: decodeEntities(post.text || '').substring(0, 140), url: postLink }).catch(() => {});
+  else window.sqCopyPostLink();
+};
+
+window.sqCopyPostLink = function() {
+  if (!AppState.sharingPostId) return;
+  const postLink = `${CURRENT_DOMAIN_ORIGIN}${window.location.pathname}?post=${AppState.sharingPostId}`;
+  navigator.clipboard.writeText(postLink).then(() => sqShowToast("تم نسخ الرابط المباشر!", "success"));
+};
+
+window.sqCopyPost = function(postId) {
+  window.sqCloseAllMenus();
+  const post = AppState.posts.find(p => p.id === postId); if (!post) return;
+  const author = post.isAnon ? "كاتب مجهول" : getRealName(post.uid, post.authorName);
+  let copyText = `"${decodeEntities(post.text || '')}"\n\n`;
+  if (post.source) copyText += `القائل: ${decodeEntities(post.source)}\n`;
+  if (post.book) copyText += `من كتاب: ${decodeEntities(post.book)}\n`;
+  copyText += `بقلم: ${author}\nعبر: ${APP_NAME}\n${CURRENT_DOMAIN_ORIGIN}${window.location.pathname}?post=${postId}`;
+  if (navigator.clipboard) navigator.clipboard.writeText(copyText).then(() => sqShowToast("تم نسخ النص مع الحقوق!", "success"));
+};
+
+window.sqRenderShareCanvas = function(themeName) {
+  AppState.shareCardTheme = themeName || 'royal';
+  const post = AppState.posts.find(p => p.id === AppState.sharingPostId);
+  const canvas = document.getElementById('sq-quote-canvas'); if (!post || !canvas) return;
+  const ctx = canvas.getContext('2d');
+  const themes = {
+    royal:     { bg1: '#0b1120', bg2: '#1e293b', border: '#d4af37', text: '#f8fafc', accent: '#d4af37', muted: '#94a3b8' },
+    parchment: { bg1: '#fdfbf7', bg2: '#f3ede0', border: '#b48a1e', text: '#1e293b', accent: '#92400e', muted: '#64748b' },
+    emerald:   { bg1: '#064e3b', bg2: '#022c22', border: '#d4af37', text: '#ecfdf5', accent: '#fbbf24', muted: '#a7f3d0' }
+  };
+  const th = themes[AppState.shareCardTheme] || themes.royal;
+  const grad = ctx.createLinearGradient(0, 0, 1080, 1080); grad.addColorStop(0, th.bg1); grad.addColorStop(1, th.bg2);
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, 1080, 1080);
+
+  ctx.strokeStyle = th.border; ctx.lineWidth = 6; ctx.strokeRect(48, 48, 984, 984);
+  ctx.lineWidth = 2; ctx.strokeRect(66, 66, 948, 948);
+
+  ctx.fillStyle = th.accent; ctx.font = "bold 36px 'Tajawal', sans-serif"; ctx.textAlign = "center"; ctx.direction = "rtl";
+  ctx.fillText(APP_NAME, 540, 160);
+
+  const rawClean = decodeEntities((post.text || 'مساهمة أدبية').replace(/https?:\/\/[^\s]+/g, '').trim()).substring(0, 380);
+  ctx.fillStyle = th.text; ctx.font = "bold 42px 'Amiri', 'Tajawal', serif";
+  const words = rawClean.split(/\s+/); const lines = []; let currentLine = '';
+  words.forEach(w => {
+    const testLine = currentLine ? currentLine + ' ' + w : w;
+    if (ctx.measureText(testLine).width > 820) { lines.push(currentLine); currentLine = w; } else currentLine = testLine;
+  });
+  if (currentLine) lines.push(currentLine);
+  const displayLines = lines.slice(0, 8); if (lines.length > 8) displayLines[7] += '...';
+  const lineHeight = 72; let startY = 530 - ((displayLines.length - 1) * lineHeight) / 2;
+  displayLines.forEach((line, i) => ctx.fillText(line, 540, startY + i * lineHeight));
+
+  const author = decodeEntities(post.isAnon ? "كاتب مجهول" : getRealName(post.uid, post.authorName));
+  ctx.fillStyle = th.accent; ctx.font = "bold 33px 'Tajawal', sans-serif";
+  ctx.fillText(`بقلم: ${author}`, 540, 900);
+
+  if (post.book || post.source) {
+    ctx.fillStyle = th.muted; ctx.font = "26px 'Tajawal', sans-serif";
+    ctx.fillText(decodeEntities(`${post.source || ''}${post.book ? ' — كتاب: ' + post.book : ''}`), 540, 948);
+  }
+  ctx.fillStyle = th.muted; ctx.font = "22px 'Tajawal', sans-serif"; ctx.fillText(window.location.hostname, 540, 995);
+};
+
+window.sqDownloadQuoteImage = function() {
+  const canvas = document.getElementById('sq-quote-canvas'); if (!canvas) return;
+  const link = document.createElement('a'); link.download = `safaqat-quote-${Date.now()}.png`; link.href = canvas.toDataURL('image/png'); link.click();
+  sqShowToast("تم حفظ بطاقة الاقتباس!", "success");
+};
+
+function sqGetSmartRankedPosts(postsList) {
+  const myUid = AppState.currentUser ? AppState.currentUser.uid : null;
+  const myFollowing = (AppState.userData && AppState.userData.following) ? AppState.userData.following : [];
+  const myBookmarks = (AppState.userData && AppState.userData.bookmarks) ? AppState.userData.bookmarks : [];
+  const aiProf = window.SafaqatAI.getProfile();
+
+  return postsList.map(p => {
+    let score = 0; let reason = '';
+    const uData = AppState.allUsers[p.uid] || {};
+    const engagement = (p.likes || []).length * 2 + (p.comments || []).length * 3;
+    if (p.postType === 'featured') { score += 55; reason = '<i class="fa-solid fa-award"></i> عمل أدبي مميز'; }
+    if (!p.isAnon && myFollowing.includes(p.uid)) {
+      score += 65; reason = '<i class="fa-solid fa-user-check"></i> لكاتب تتابعه';
+    }
+    if (p.linkedBookId && (aiProf.viewedBooks || []).includes(p.linkedBookId)) {
+      score += 45; if (!reason) reason = '<i class="fa-solid fa-wand-magic-sparkles"></i> مرتبط بكتاب تهتم به';
+    }
+    if (!p.isAnon && (uData.isAuthor || uData.isPublisher)) { score += 25; if (!reason) reason = '<i class="fa-solid fa-circle-check"></i> حساب موثق'; }
+    if (engagement >= 4) { score += Math.min(engagement * 3, 30); if (!reason) reason = '<i class="fa-solid fa-fire"></i> متداول الآن'; }
+    if (myUid && ((p.likes || []).includes(myUid) || myBookmarks.includes(p.id))) score -= 18;
+    return { ...p, _recScore: score, _recReason: reason };
+  }).sort((a, b) => b._recScore - a._recScore);
+}
+
+function sqNormalizePostComments(rawComments) {
+  const flat = [];
+  (rawComments || []).forEach((c, idx) => {
+    const cId = c.id || ('legacy_' + idx);
+    flat.push({ id: cId, parentId: c.parentId || null, replyToName: c.replyToName || null, uid: c.uid, name: c.name, photo: c.photo || '', text: c.text, time: c.time || 0 });
+    if (Array.isArray(c.replies)) {
+      c.replies.forEach((r, rIdx) => {
+        flat.push({ id: r.id || (`legacy_${idx}_${rIdx}`), parentId: cId, replyToName: getRealName(c.uid, c.name), uid: r.uid, name: r.name, photo: r.photo || '', text: r.text, time: r.time || 0 });
+      });
+    }
+  });
+  return flat;
+}
+
+window.sqToggleReplyBox = function(postId, commentId) {
+  const box = document.getElementById(`reply-box-${postId}-${commentId}`);
+  const inp = document.getElementById(`r-in-${postId}-${commentId}`);
+  if (!box) return;
+  if (box.style.display === 'flex') box.style.display = 'none';
+  else { box.style.display = 'flex'; if (inp) setTimeout(() => inp.focus(), 40); }
+};
+
+window.sqToggleThreadCollapse = function(postId, commentId) {
+  if (AppState.collapsedThreads.has(commentId)) AppState.collapsedThreads.delete(commentId);
+  else AppState.collapsedThreads.add(commentId);
+  window.sqPatchPostInteractivity(postId);
+};
+
+function sqRenderCommentTreeHTML(postId, flatComments, parentId = null, depth = 0, commentsLocked = false) {
+  const children = flatComments.filter(c => (c.parentId || null) === parentId);
+  if (!children.length) return '';
+  return children.map(c => {
+    const isCommentOwner = AppState.currentUser && c.uid === AppState.currentUser.uid;
+    const canDelete = isCommentOwner || window.sqHasPermission('manage_mod');
+    const cName = escapeHtml(getRealName(c.uid, c.name));
+    const cPhoto = getRealPhoto(c.uid, c.photo);
+    const cBadge = window.getUserBadges(c.uid, false, false);
+    const subChildrenCount = flatComments.filter(x => x.parentId === c.id).length;
+    const isCollapsed = AppState.collapsedThreads.has(c.id);
+
+    let actionsHtml = `<span style="color:var(--text-muted);">${sqFormatRelativeTime(c.time)}</span>`;
+    if (AppState.currentUser && (!commentsLocked || AppState.isAdmin)) actionsHtml += `<span style="cursor:pointer; font-weight:bold; color:var(--text-main);" onclick="window.sqToggleReplyBox('${postId}', '${c.id}')"><i class="fa-solid fa-reply"></i> رد</span>`;
+    if (isCommentOwner) actionsHtml += `<span style="color:var(--text-main); cursor:pointer; font-weight:bold;" onclick="window.sqEditTreeComment('${postId}', '${c.id}')">تعديل</span>`;
+    if (canDelete) actionsHtml += `<span style="color:var(--danger); cursor:pointer; font-weight:bold;" onclick="window.sqDeleteTreeComment('${postId}', '${c.id}')">حذف</span>`;
+    if (subChildrenCount > 0) actionsHtml += `<span style="color:var(--accent); cursor:pointer; font-weight:bold;" onclick="window.sqToggleThreadCollapse('${postId}', '${c.id}')">${isCollapsed ? `إظهار الردود (${subChildrenCount})` : `طي`}</span>`;
+
+    const nestedHtml = (!isCollapsed) ? sqRenderCommentTreeHTML(postId, flatComments, c.id, depth + 1, commentsLocked) : '';
+    const childIndentStyle = depth < 3 ? '' : 'margin-right:6px; padding-right:8px;';
+
+    return `
+      <div class="sq-comment-node">
+        <div style="display:flex; gap:8px;">
+          <img src="${cPhoto}" class="sq-avatar" style="width:${depth === 0 ? '34px' : '28px'}; height:${depth === 0 ? '34px' : '28px'}; min-width:${depth === 0 ? '34px' : '28px'};" onclick="window.sqViewProfile('${c.uid}')" loading="lazy">
+          <div style="width:100%;">
+            <div class="sq-comment-card">
+              <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin-bottom:3px;">
+                <strong style="color:var(--text-main); cursor:pointer; font-size:13px;" onclick="window.sqViewProfile('${c.uid}')">${cName}</strong> ${cBadge}
+              </div>
+              ${c.replyToName ? `<div class="sq-reply-mention"><i class="fa-solid fa-reply"></i> @${escapeHtml(c.replyToName)}</div><br>` : ''}
+              <span style="color:var(--text-main); font-size:13.5px; line-height:1.6; white-space:pre-wrap;">${escapeHtml(c.text)}</span>
+            </div>
+            <div style="font-size:11px; margin-top:4px; color:var(--text-muted); display:flex; gap:12px; padding-right:6px; flex-wrap:wrap;">${actionsHtml}</div>
+            <div id="reply-box-${postId}-${c.id}" style="display:none; gap:6px; margin-top:6px;">
+              <input type="text" id="r-in-${postId}-${c.id}" class="sq-input" style="margin:0!important; padding:8px 12px!important; border-radius:18px!important; font-size:12.5px;" placeholder="الرد على ${cName}..." onkeyup="if(event.key==='Enter') window.sqAddTreeComment('${postId}', '${c.id}')">
+              <button class="sq-btn" style="border-radius:18px!important; padding:7px 13px!important; font-size:12px!important;" onclick="window.sqAddTreeComment('${postId}', '${c.id}')"><i class="fa-solid fa-paper-plane"></i></button>
+            </div>
+          </div>
+        </div>
+        ${nestedHtml ? `<div class="sq-comment-children" style="${childIndentStyle}">${nestedHtml}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+window.sqAddTreeComment = function(postId, parentId = null) {
+  if (!AppState.currentUser) return sqShowToast("سجل دخولك أولاً للتعليق", "warning");
+  if (AppState.userData.isMuted && !AppState.isAdmin) return sqShowToast("حسابك مقيد من التعليق", "danger");
+  const post = AppState.posts.find(p => p.id === postId); if (!post) return;
+  if (post.commentsLocked && !AppState.isAdmin) return sqShowToast("التعليقات مغلقة على هذا المنشور", "warning");
+
+  const inputId = parentId ? `r-in-${postId}-${parentId}` : `c-in-${postId}`;
+  const inp = document.getElementById(inputId);
+  const text = inp ? inp.value.trim() : ''; if (!text) return;
+
+  const flatList = sqNormalizePostComments(post.comments || []);
+  let targetOwnerUid = post.uid; let replyToName = null;
+  if (parentId) {
+    const parentNode = flatList.find(c => c.id === parentId);
+    if (parentNode) { targetOwnerUid = parentNode.uid; replyToName = getRealName(parentNode.uid, parentNode.name); }
+  }
+
+  flatList.push({
+    id: 'c_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    parentId: parentId || null, replyToName: replyToName,
+    uid: AppState.currentUser.uid,
+    name: getRealName(AppState.currentUser.uid, AppState.currentUser.displayName),
+    photo: getRealPhoto(AppState.currentUser.uid, AppState.currentUser.photoURL),
+    text: text, time: Date.now()
+  });
+  if (inp) inp.value = '';
+  post.comments = flatList;
+  window.sqPatchPostInteractivity(postId);
+
+  db.collection("safaqat_quotes").doc(postId).update({ comments: flatList }).then(() => {
+    if (targetOwnerUid && targetOwnerUid !== AppState.currentUser.uid) {
+      const actor = getRealName(AppState.currentUser.uid, AppState.currentUser.displayName);
+      window.sqSendNotif(targetOwnerUid, postId, parentId ? `ردّ ${actor} على تعليقك.` : `علّق ${actor} على منشورك.`);
+    }
+  });
+};
+
+window.sqEditTreeComment = function(postId, commentId) {
+  const post = AppState.posts.find(p => p.id === postId); if (!post) return;
+  const flatList = sqNormalizePostComments(post.comments || []);
+  const target = flatList.find(c => c.id === commentId); if (!target) return;
+  window.sqOpenCustomPrompt("تعديل التعليق:", target.text, (newText) => {
+    if (newText) {
+      target.text = newText; post.comments = flatList;
+      window.sqPatchPostInteractivity(postId);
+      db.collection("safaqat_quotes").doc(postId).update({ comments: flatList }).then(() => sqShowToast("تم تعديل التعليق", "success"));
+    }
+  });
+};
+
+window.sqDeleteTreeComment = function(postId, commentId) {
+  if (!confirm("حذف هذا التعليق وجميع الردود المتفرعة منه؟")) return;
+  const post = AppState.posts.find(p => p.id === postId); if (!post) return;
+  const flatList = sqNormalizePostComments(post.comments || []);
+  const toRemove = new Set([commentId]); let added = true;
+  while (added) {
+    added = false;
+    flatList.forEach(c => { if (c.parentId && toRemove.has(c.parentId) && !toRemove.has(c.id)) { toRemove.add(c.id); added = true; } });
+  }
+  const updated = flatList.filter(c => !toRemove.has(c.id));
+  post.comments = updated; window.sqPatchPostInteractivity(postId);
+  db.collection("safaqat_quotes").doc(postId).update({ comments: updated }).then(() => sqShowToast("تم الحذف", "success"));
+};
+
+window.sqBuildSinglePostHTML = function(post, isStandalone = false) {
+  const isOwner = AppState.currentUser && post.uid === AppState.currentUser.uid;
+  const hasLiked = AppState.currentUser && (post.likes || []).includes(AppState.currentUser.uid);
+  const isBookmarked = AppState.currentUser && (AppState.userData.bookmarks || []).includes(post.id);
+  const uData = AppState.allUsers[post.uid] || {};
+
+  const actualAuthorName = escapeHtml(post.isAnon ? "مجهول" : getRealName(post.uid, post.authorName));
+  const actualPhoto = post.isAnon ? ANON_PIC : getRealPhoto(post.uid, post.authorPhoto);
+  const roleBadge = window.getUserBadges(post.uid, post.isAnon, post.isAdminPost, true);
+  const isOnline = !post.isAnon && window.sqIsUserOnline(post.uid);
+  const hasStory = !post.isAnon && window.sqUserHasActiveStory(post.uid);
+  const safeOwnerUidForLike = post.isAnon ? '' : post.uid;
+
+  let quickFollowHtml = '';
+  if (!post.isAnon && AppState.currentUser && !isOwner) {
+    const myFollowing = AppState.userData.following || [];
+    if (!myFollowing.includes(post.uid)) {
+      quickFollowHtml = `<button type="button" class="sq-follow-chip" onclick="window.sqToggleFollowUser('${post.uid}', this, event)"><i class="fa-solid fa-plus"></i> متابعة</button>`;
+    }
+  }
+
+  let readingNowSubHtml = '';
+  if (!post.isAnon && uData.currentlyReadingBookId) {
+    const rBook = AppState.booksList.find(b => b.id === uData.currentlyReadingBookId);
+    if (rBook) {
+      readingNowSubHtml = `<span style="font-size:10.5px; color:var(--accent); font-weight:800; cursor:pointer; margin-right:6px;" onclick="event.stopPropagation(); window.sqOpenBookDetail('${rBook.id}')"><i class="fa-solid fa-book-open-reader"></i> يقرأ: ${escapeHtml(rBook.title)}</span>`;
+    }
+  }
+
+  const catKey = post.category || 'literature';
+  const catObj = POST_CATEGORIES[catKey] || POST_CATEGORIES.literature;
+  const wordCount = (post.text || '').trim().split(/\s+/).filter(Boolean).length;
+  const readMins = Math.max(1, Math.ceil(wordCount / 130));
+  const viewsCount = post.views || 1;
+
+  let statusBadge = '';
+  if (post.postType === 'featured') statusBadge = `<span style="background:var(--accent-soft); color:#b45309; padding:2px 8px; border-radius:10px; font-size:10.5px; font-weight:bold; border:1px solid var(--accent);"><i class="fa-solid fa-award"></i> مميز</span>`;
+
+  let recBadgeHtml = (!isStandalone && AppState.currentFilter === 'for_you' && post._recReason) ? `<span class="sq-rec-reason">${post._recReason}</span>` : '';
+
+  let avatarClick = ''; let nameClick = '';
+  if (post.isAnon) {
+    if (AppState.isAdmin) {
+      avatarClick = `onclick="window.sqViewProfile('${post.uid}')" style="cursor:pointer; border:2px solid var(--danger);" title="الاسم الحقيقي للإدارة: ${escapeHtml(getRealName(post.uid, post.authorName))}"`;
+      nameClick = `onclick="window.sqViewProfile('${post.uid}')" style="cursor:pointer; color:var(--danger);"`;
+    } else {
+      avatarClick = `onclick="window.sqShowToast('نُشر كمجهول', 'warning')" style="cursor:default;"`;
+      nameClick = `style="cursor:default;"`;
+    }
+  } else {
+    avatarClick = hasStory ? `onclick="window.sqOpenUserStories('${post.uid}', 0)" style="cursor:pointer;" title="مشاهدة القصة"` : `onclick="window.sqViewProfile('${post.uid}')" style="cursor:pointer;"`;
+    nameClick = `onclick="window.sqViewProfile('${post.uid}')" style="cursor:pointer;"`;
+  }
+
+  let sourceHtml = '';
+  const linkedBookObj = post.linkedBookId ? AppState.booksList.find(b => b.id === post.linkedBookId) : (post.book ? AppState.booksList.find(b => b.title.trim() === post.book.trim()) : null);
+  if (linkedBookObj) {
+    const bst = window.sqGetBookStats(linkedBookObj);
+    const bAuth = linkedBookObj.authorUid ? getRealName(linkedBookObj.authorUid, linkedBookObj.authorName) : (linkedBookObj.authorName || '');
+    sourceHtml = `
+      <div class="sq-attached-book-pill" onclick="event.stopPropagation(); window.sqOpenBookDetail('${linkedBookObj.id}')">
+        <div style="display:flex; align-items:center; gap:10px; overflow:hidden;">
+          <img src="${escapeHtml(linkedBookObj.cover || APP_LOGO_URL)}" style="width:38px; height:54px; object-fit:cover; border-radius:6px; border:1px solid var(--accent); flex-shrink:0;" loading="lazy">
+          <div style="overflow:hidden;">
+            <div style="font-size:12.5px; font-weight:900; color:var(--text-main); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"><i class="fa-solid fa-book-bookmark" style="color:var(--accent);"></i> ${escapeHtml(linkedBookObj.title)}</div>
+            <div style="font-size:11px; color:var(--text-muted);">${escapeHtml(bAuth)} • <i class="fa-solid fa-star" style="color:#fbbf24;"></i> ${bst.avgRating}</div>
+          </div>
+        </div>
+        <span style="font-size:11px; font-weight:800; color:var(--accent); flex-shrink:0;">صفحة الكتاب <i class="fa-solid fa-chevron-left"></i></span>
+      </div>
+    `;
+  } else if (post.source || post.book) {
+    sourceHtml = `<div class="sq-source-card">${post.source ? `<span class="sq-source-tag"><i class="fa-solid fa-feather" style="color:var(--accent);"></i> القائل: <strong style="color:var(--text-main);">${escapeHtml(post.source)}</strong></span>` : ''}${post.book ? `<span class="sq-source-tag"><i class="fa-solid fa-book-bookmark" style="color:var(--accent);"></i> الكتاب: <strong style="color:var(--text-main);">${escapeHtml(post.book)}</strong></span>` : ''}</div>`;
+  }
+
+  const canModerate = window.sqHasPermission('manage_mod');
+  let options = '';
+  if (!isStandalone) options += `<button onclick="window.sqOpenSinglePost('${post.id}')"><i class="fa-solid fa-expand" style="color:var(--text-main);"></i> فتح المنشور كاملاً</button>`;
+  options += `<button onclick="window.sqCopyPost('${post.id}')"><i class="fa-regular fa-copy" style="color:var(--accent);"></i> نسخ النص مع الحقوق</button>`;
+  options += `<button onclick="window.sqOpenShareModal('${post.id}')"><i class="fa-solid fa-image" style="color:var(--accent);"></i> بطاقة الاقتباس</button>`;
+  if (!post.isAnon) options += `<button onclick="window.sqCloseAllMenus(); window.sqViewProfile('${post.uid}')"><i class="fa-regular fa-user"></i> ملف الكاتب</button>`;
+  if (AppState.currentUser) {
+    if (isOwner) options += `<button onclick="window.sqOpenPublishModal('${post.id}')"><i class="fa-solid fa-pen"></i> تعديل مساهمتي</button>`;
+    if (isOwner || canModerate) {
+      options += `<button onclick="window.sqToggleCommentsLock('${post.id}', ${post.commentsLocked || false})"><i class="fa-solid ${post.commentsLocked ? 'fa-lock-open' : 'fa-lock'}"></i> ${post.commentsLocked ? 'فتح التعليقات' : 'إغلاق التعليقات'}</button>`;
+      options += `<button style="color:var(--danger);" onclick="window.sqDeletePost('${post.id}')"><i class="fa-solid fa-trash-can"></i> حذف المنشور</button>`;
+    }
+    if (canModerate && !isOwner) options += `<button style="color:var(--danger);" onclick="window.sqCloseAllMenus(); window.sqToggleMute('${post.uid}', ${uData.isMuted || false})"><i class="fa-solid fa-microphone-slash"></i> ${uData.isMuted ? 'فك التقييد' : 'تقييد الكاتب'}</button>`;
+    if (!isOwner && !canModerate) options += `<button style="color:var(--warning);" onclick="window.sqReportPost('${post.id}')"><i class="fa-solid fa-flag"></i> إبلاغ عن مخالفة</button>`;
+  }
+
+  const menuBtn = `<div class="sq-menu"><button class="sq-icon-btn" style="width:34px; height:34px; font-size:14px;" onclick="window.sqTogglePostMenu(event, '${post.id}')"><i class="fa-solid fa-ellipsis-vertical"></i></button><div class="sq-dropdown" id="drop-${post.id}" onclick="event.stopPropagation()">${options}</div></div>`;
+
+  const isPoetic = post.textAlign === 'center' || post.category === 'quote';
+  const textClass = 'sq-post-text' + (isPoetic ? ' poetic-center' : '');
+  const rawText = decodeEntities(post.text || '');
+  const isLongText = !isStandalone && (rawText.length > 260 || (rawText.match(/\n/g) || []).length >= 4);
+  const displayedRaw = isLongText ? rawText.substring(0, 260) + '...' : rawText;
+  const { textHtml, embedHtml } = parseContent(displayedRaw);
+
+  let bodyContentHtml = '';
+  if (textHtml) {
+    bodyContentHtml += `<div class="${textClass}" ${!isStandalone ? `onclick="window.sqOpenSinglePost('${post.id}')" style="cursor:pointer;"` : ''} ondblclick="event.stopPropagation(); window.sqDoubleTapLike('${post.id}', '${safeOwnerUidForLike}')">${textHtml}</div>`;
+  }
+  if (isLongText) {
+    bodyContentHtml += `<div class="sq-open-single-hint" onclick="window.sqOpenSinglePost('${post.id}')">إكمال القراءة والمناقشة <i class="fa-solid fa-arrow-left"></i></div>`;
+  }
+
+  const postImages = (Array.isArray(post.images) && post.images.length) ? post.images : (post.imageUrl ? [post.imageUrl] : []);
+  if (postImages.length > 0) {
+    const trackId = `car-track-${post.id}-${isStandalone ? 's' : 'f'}`;
+    const counterId = `car-cnt-${post.id}-${isStandalone ? 's' : 'f'}`;
+    const slidesHtml = postImages.map(imgUrl => {
+      const safeUrl = escapeHtml(imgUrl);
+      const imgClick = isStandalone ? `window.sqOpenLightbox('${safeUrl}')` : `window.sqOpenSinglePost('${post.id}')`;
+      return `<div class="sq-carousel-slide ${isStandalone ? 'single-full' : ''}"><img src="${safeUrl}" loading="lazy" onclick="${imgClick}" onerror="this.parentElement.style.display='none'"><button type="button" class="sq-img-dl-btn" onclick="window.sqDownloadDirectImage('${safeUrl}', event)" title="تحميل الصورة"><i class="fa-solid fa-download"></i></button></div>`;
+    }).join('');
+
+    bodyContentHtml += `
+      <div class="sq-carousel-wrap">
+        ${postImages.length > 1 ? `<div class="sq-carousel-counter" id="${counterId}">1 / ${postImages.length}</div>` : ''}
+        ${postImages.length > 1 ? `<button type="button" class="sq-carousel-nav prev" onclick="window.sqScrollCarousel('${trackId}', 1, event)"><i class="fa-solid fa-chevron-right"></i></button><button type="button" class="sq-carousel-nav next" onclick="window.sqScrollCarousel('${trackId}', -1, event)"><i class="fa-solid fa-chevron-left"></i></button>` : ''}
+        <div class="sq-carousel-track" id="${trackId}" onscroll="window.sqUpdateCarouselCounter(this, '${counterId}')">${slidesHtml}</div>
+      </div>
+    `;
+  }
+
+  bodyContentHtml += embedHtml;
+
+  const flatComments = sqNormalizePostComments(post.comments || []);
+  const likesCount = (post.likes || []).length;
+  const timeDisplay = isStandalone ? `<i class="fa-regular fa-calendar-check" style="color:var(--accent);"></i> ${sqFormatExactTime(post.timestamp)}` : sqFormatRelativeTime(post.timestamp);
+
+  let standaloneCommentsSection = '';
+  if (isStandalone) {
+    const treeCommentsHTML = sqRenderCommentTreeHTML(post.id, flatComments, null, 0, post.commentsLocked);
+    let commentBoxUi = '';
+    if (post.commentsLocked && !AppState.isAdmin) {
+      commentBoxUi = `<p style="font-size:12.5px; text-align:center; color:var(--text-muted); font-weight:bold; margin-top:10px;"><i class="fa-solid fa-lock"></i> التعليقات مغلقة</p>`;
+    } else if (AppState.currentUser) {
+      if (AppState.userData.isMuted && !AppState.isAdmin) commentBoxUi = `<p style="font-size:12.5px; text-align:center; color:var(--danger); font-weight:bold; margin-top:10px;">حسابك مقيد من التعليق</p>`;
+      else commentBoxUi = `<div style="display:flex; gap:8px; margin-top:14px;"><input type="text" id="c-in-${post.id}" class="sq-input" style="margin:0!important; border-radius:25px!important; background:var(--card)!important;" placeholder="أضف تعليقاً..." onkeyup="if(event.key==='Enter') window.sqAddTreeComment('${post.id}', null)"><button class="sq-btn sq-btn-gold" style="border-radius:50%!important; padding:0!important; width:42px!important; height:42px!important; flex-shrink:0;" onclick="window.sqAddTreeComment('${post.id}', null)"><i class="fa-solid fa-paper-plane" style="font-size:14px;"></i></button></div>`;
+    } else {
+      commentBoxUi = `<p style="font-size:12.5px; text-align:center; color:var(--text-muted); font-weight:bold; margin-top:10px;">سجل دخولك للمشاركة في الحوار</p>`;
+    }
+    standaloneCommentsSection = `
+      <div style="margin-top:16px; background:var(--bg); padding:14px; border-radius:16px; border:1px solid var(--border);">
+        <h4 style="font-size:14px; margin-bottom:12px; color:var(--text-main); display:flex; align-items:center; gap:6px;"><i class="fa-regular fa-comments" style="color:var(--accent);"></i> التعليقات (${flatComments.length})</h4>
+        <div id="comments-tree-${post.id}">${treeCommentsHTML || '<p style="font-size:12.5px; color:var(--text-muted); text-align:center; padding:12px 0;">كن أول من يفتتح النقاش...</p>'}</div>
+        ${commentBoxUi}
+      </div>
+    `;
+  }
+
+  return `
+    <article class="sq-post ${post.postType === 'featured' ? 'featured-post' : ''}" id="post-${post.id}">
+      <div id="heart-burst-${post.id}"></div>
+      <div class="sq-post-top-meta">
+        <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
+          <span class="sq-cat-badge" onclick="window.sqFilterByCategory('${catKey}')"><i class="fa-solid ${catObj.icon}" style="color:var(--accent);"></i> ${catObj.label}</span>
+          ${recBadgeHtml} ${statusBadge}
+        </div>
+        <span class="sq-read-time"><i class="fa-regular fa-eye" style="color:var(--accent);"></i> <span id="view-cnt-${post.id}">${viewsCount}</span> • <i class="fa-regular fa-clock"></i> ${readMins} د</span>
+      </div>
+      <div class="sq-post-header">
+        <div class="sq-user-meta">
+          <div class="sq-avatar-wrap ${hasStory ? 'sq-has-story-ring' : ''}">
+            <img src="${actualPhoto}" class="sq-avatar" ${avatarClick} loading="lazy">
+            ${isOnline ? '<span class="sq-online-dot"></span>' : ''}
+          </div>
+          <div>
+            <div class="sq-name"><span ${nameClick}>${actualAuthorName}</span> ${roleBadge} ${quickFollowHtml}</div>
+            <div class="sq-time"><span onclick="window.sqOpenSinglePost('${post.id}')">${timeDisplay}</span> ${readingNowSubHtml}</div>
+          </div>
+        </div>
+        ${menuBtn}
+      </div>
+      ${bodyContentHtml}
+      ${sourceHtml}
+      <div class="sq-actions">
+        <div style="display:flex; align-items:center; gap:4px;" id="like-wrap-${post.id}">
+          <button class="sq-action-btn" id="like-btn-${post.id}" style="${hasLiked ? 'color:var(--danger);' : ''}" onclick="window.sqLike('${post.id}', '${safeOwnerUidForLike}')">
+            <i class="${hasLiked ? 'fa-solid' : 'fa-regular'} fa-heart"></i> <span>${likesCount || 'إعجاب'}</span>
+          </button>
+          ${likesCount > 0 ? `<span class="sq-likes-who-btn" onclick="window.sqOpenLikesModal('${post.id}')">من أعجب؟</span>` : ''}
+        </div>
+        <button class="sq-action-btn" id="comment-btn-${post.id}" onclick="${isStandalone ? `if(document.getElementById('c-in-${post.id}')) document.getElementById('c-in-${post.id}').focus()` : `window.sqOpenSinglePost('${post.id}')`}">
+          <i class="fa-regular fa-comment"></i> <span>${flatComments.length ? flatComments.length + ' تعليق' : 'مناقشة'}</span> ${post.commentsLocked ? '<i class="fa-solid fa-lock" style="font-size:10px;"></i>' : ''}
+        </button>
+        <button class="sq-action-btn" onclick="window.sqOpenShareModal('${post.id}')"><i class="fa-solid fa-share-nodes" style="color:var(--accent);"></i> مشاركة</button>
+        <button class="sq-action-btn" id="bookmark-btn-${post.id}" style="${isBookmarked ? 'color:var(--accent);' : ''}" onclick="window.sqBookmark('${post.id}')"><i class="${isBookmarked ? 'fa-solid' : 'fa-regular'} fa-bookmark"></i></button>
+      </div>
+      ${standaloneCommentsSection}
+    </article>
+  `;
+};
+
+window.sqOpenSinglePost = function(postId) {
+  window.sqCloseAllMenus();
+  AppState.viewingPostId = postId;
+  const post = AppState.posts.find(p => p.id === postId);
+  if (post && post.linkedBookId) {
+    const b = AppState.booksList.find(x => x.id === post.linkedBookId);
+    if (b) window.SafaqatAI.trackSignal('book', b, 2);
+  }
+  window.sqRecordPostView(postId);
+  window.sqSwitchMainView('single_post');
+  window.sqRenderSinglePostView();
+};
+
+window.sqRecordPostView = function(postId) {
+  if (!postId) return;
+  const vKey = 'sq_pv_' + postId;
+  if (sessionStorage.getItem(vKey)) return;
+  sessionStorage.setItem(vKey, '1');
+  const p = AppState.posts.find(x => x.id === postId);
+  if (p) {
+    p.views = (p.views || 1) + 1;
+    const vEl = document.getElementById('view-cnt-' + postId);
+    if (vEl) vEl.innerText = p.views;
+  }
+  db.collection("safaqat_quotes").doc(postId).update({ views: firebase.firestore.FieldValue.increment(1) }).catch(() => {});
+};
+
+window.sqRenderSinglePostView = function() {
+  const container = document.getElementById('sq-view-single-post');
+  if (!container) return;
+  const post = AppState.posts.find(p => p.id === AppState.viewingPostId);
+  if (!post) {
+    container.innerHTML = `<div class="sq-hub-card" style="text-align:center; padding:40px 20px;"><p style="color:var(--text-muted); margin-bottom:15px;">هذا المنشور غير موجود أو تم حذفه.</p><button class="sq-btn" onclick="window.sqSwitchMainView('community', true)"><i class="fa-solid fa-arrow-right"></i> العودة للمجتمع</button></div>`;
+    return;
+  }
+
+  const authorName = post.isAnon ? 'كاتب مجهول' : getRealName(post.uid, post.authorName);
+  const snippet = decodeEntities(post.text || '').substring(0, 75);
+  window.sqUpdateDynamicSEO(
+    `${authorName}: "${snippet}"`,
+    post.text || '',
+    (Array.isArray(post.images) && post.images[0]) ? post.images[0] : (post.imageUrl || APP_LOGO_URL),
+    false,
+    {
+      "@context": "https://schema.org",
+      "@type": "SocialMediaPosting",
+      "headline": snippet,
+      "author": { "@type": "Person", "name": decodeEntities(authorName) },
+      "articleBody": decodeEntities(post.text || '')
+    }
+  );
+
+  container.innerHTML = `
+    <div class="sq-inpage-topbar">
+      <div class="sq-inpage-title"><i class="fa-solid fa-feather-pointed" style="color:var(--accent);"></i> عرض المساهمة والحوار</div>
+      <button class="sq-back-pill" onclick="window.sqSwitchMainView('community', true)"><i class="fa-solid fa-arrow-left"></i> المجتمع</button>
+    </div>
+    ${window.sqBuildSinglePostHTML(post, true)}
+  `;
+};
+
+window.sqPatchPostInteractivity = function(postId) {
+  const post = AppState.posts.find(p => p.id === postId); if (!post) return;
+  const hasLiked = AppState.currentUser && (post.likes || []).includes(AppState.currentUser.uid);
+  const isBookmarked = AppState.currentUser && (AppState.userData.bookmarks || []).includes(post.id);
+  const likesCount = (post.likes || []).length;
+  const flatComments = sqNormalizePostComments(post.comments || []);
+  const safeOwnerUid = post.isAnon ? '' : post.uid;
+
+  const likeWrap = document.getElementById(`like-wrap-${postId}`);
+  if (likeWrap) {
+    likeWrap.innerHTML = `
+      <button class="sq-action-btn" id="like-btn-${post.id}" style="${hasLiked ? 'color:var(--danger);' : ''}" onclick="window.sqLike('${post.id}', '${safeOwnerUid}')">
+        <i class="${hasLiked ? 'fa-solid' : 'fa-regular'} fa-heart"></i> <span>${likesCount || 'إعجاب'}</span>
+      </button>
+      ${likesCount > 0 ? `<span class="sq-likes-who-btn" onclick="window.sqOpenLikesModal('${post.id}')">من أعجب؟</span>` : ''}
+    `;
+  }
+  const cBtn = document.getElementById(`comment-btn-${postId}`);
+  if (cBtn) cBtn.innerHTML = `<i class="fa-regular fa-comment"></i> <span>${flatComments.length ? flatComments.length + ' تعليق' : 'مناقشة'}</span> ${post.commentsLocked ? '<i class="fa-solid fa-lock" style="font-size:10px;"></i>' : ''}`;
+  const bBtn = document.getElementById(`bookmark-btn-${postId}`);
+  if (bBtn) { bBtn.style.color = isBookmarked ? 'var(--accent)' : ''; bBtn.innerHTML = `<i class="${isBookmarked ? 'fa-solid' : 'fa-regular'} fa-bookmark"></i>`; }
+
+  const treeContainer = document.getElementById(`comments-tree-${postId}`);
+  if (treeContainer) {
+    treeContainer.innerHTML = sqRenderCommentTreeHTML(post.id, flatComments, null, 0, post.commentsLocked) || '<p style="font-size:12.5px; color:var(--text-muted); text-align:center; padding:12px 0;">كن أول من يفتتح النقاش...</p>';
+  }
+};
+
+window.sqLoadFeed = function() {
+  if (AppState.feedUnsubscribe) AppState.feedUnsubscribe();
+  AppState.feedUnsubscribe = db.collection("safaqat_quotes").orderBy("timestamp", "desc").limit(AppState.postLimit).onSnapshot(snap => {
+    const newPosts = [];
+    snap.forEach(doc => newPosts.push({ id: doc.id, ...doc.data() }));
+    const oldIdsSig = AppState.posts.map(p => p.id + '_' + (p.text || '').length + '_' + (p.comments || []).length + '_' + (p.likes || []).length).join('|');
+    const newIdsSig = newPosts.map(p => p.id + '_' + (p.text || '').length + '_' + (p.comments || []).length + '_' + (p.likes || []).length).join('|');
+    AppState.posts = newPosts;
+    try { localStorage.setItem('sq_offline_posts_cache', JSON.stringify(AppState.posts.slice(0, 25))); } catch (e) {}
+
+    if (!AppState.deepLinkHandled) {
+      const urlParams = new URLSearchParams(window.location.search);
+      const targetPost = urlParams.get('post');
+      const targetProf = urlParams.get('profile');
+      const targetView = urlParams.get('view');
+      const targetPage = urlParams.get('page');
+      if (targetPost) {
+        AppState.deepLinkHandled = true;
+        if (AppState.posts.some(p => p.id === targetPost)) {
+          window.sqOpenSinglePost(targetPost);
+        } else {
+          db.collection("safaqat_quotes").doc(targetPost).get().then(doc => {
+            if (doc.exists) {
+              AppState.posts.unshift({ id: doc.id, ...doc.data() });
+              window.sqOpenSinglePost(targetPost);
+            }
+          });
+        }
+        return;
+      } else if (targetProf) {
+        AppState.deepLinkHandled = true;
+        window.sqViewProfile(targetProf);
+        return;
+      } else if (targetView === 'community') {
+        AppState.deepLinkHandled = true;
+        window.sqSwitchMainView('community');
+      } else if (targetPage) {
+        AppState.deepLinkHandled = true;
+        window.sqOpenLegalPage(targetPage, false);
+      }
+    }
+
+    if (oldIdsSig !== newIdsSig) {
+      if (AppState.activeMainView === 'community') window.sqRenderFeed(false);
+      if (AppState.activeMainView === 'single_post' && AppState.viewingPostId) window.sqPatchPostInteractivity(AppState.viewingPostId);
+    }
+  }, err => {
+    console.warn("Feed Listener Error:", err);
+  });
+};
+
+window.sqRenderFeed = function(forceRebuild = false) {
+  const container = document.getElementById('sq-feed-container'); if (!container) return;
+  const myBlocked = (AppState.userData && AppState.userData.blockedUsers) ? AppState.userData.blockedUsers : [];
+  let filtered = AppState.posts.filter(p => !myBlocked.includes(p.uid));
+
+  if (AppState.currentFilter === 'for_you') filtered = sqGetSmartRankedPosts(filtered);
+  else if (AppState.currentFilter === 'following' && AppState.currentUser) {
+    const myFollowSet = new Set(AppState.userData.following || []);
+    filtered = filtered.filter(p => !p.isAnon && myFollowSet.has(p.uid));
+  } else if (AppState.currentFilter === 'bookmarks' && AppState.currentUser) {
+    filtered = filtered.filter(p => (AppState.userData.bookmarks || []).includes(p.id));
+  }
+
+  if (AppState.activeCategoryFilter) filtered = filtered.filter(p => (p.category || 'literature') === AppState.activeCategoryFilter);
+
+  const feedTitle = document.getElementById('sq-feed-title');
+  if (AppState.activeCategoryFilter && POST_CATEGORIES[AppState.activeCategoryFilter]) {
+    feedTitle.style.display = 'block';
+    feedTitle.innerHTML = `تصنيف: <span style="color:var(--accent);">${POST_CATEGORIES[AppState.activeCategoryFilter].label}</span> <button onclick="window.sqFilterByCategory('${AppState.activeCategoryFilter}')" style="background:none; border:none; color:var(--danger); cursor:pointer; font-size:12px; font-weight:bold; margin-right:6px;">(إلغاء)</button>`;
+  } else { feedTitle.style.display = 'none'; }
+
+  if (AppState.searchQuery) {
+    const q = AppState.searchQuery;
+    filtered = filtered.filter(p => {
+      const realAuthor = p.isAnon ? '' : getRealName(p.uid, p.authorName).toLowerCase();
+      const shortSkid = p.isAnon ? '' : ('sk-' + p.uid.substring(0, 6)).toLowerCase();
+      return decodeEntities(p.text || '').toLowerCase().includes(q) || decodeEntities(p.source || '').toLowerCase().includes(q) || decodeEntities(p.book || '').toLowerCase().includes(q) || realAuthor.includes(q) || shortSkid.includes(q);
+    });
+  }
+
+  const structSig = AppState.currentFilter + '_' + (AppState.activeCategoryFilter || '') + '_' + AppState.searchQuery + '_' + filtered.map(p => p.id + '_' + (p.text || '').length).join(',');
+  if (!forceRebuild && AppState.renderedPostSignature === structSig && container.children.length > 0) {
+    filtered.forEach(p => window.sqPatchPostInteractivity(p.id));
+    return;
+  }
+  AppState.renderedPostSignature = structSig;
+
+  if (filtered.length === 0) {
+    container.innerHTML = `<div style="text-align:center; padding:45px 20px; color:var(--text-muted); background:var(--card); border-radius:var(--radius-xl); border:1px solid var(--border);"><i class="fa-solid fa-feather fa-2x" style="margin-bottom:10px; opacity:0.35; color:var(--accent);"></i><br><strong>لا توجد مساهمات مطابقة في هذا القسم حالياً.</strong></div>`;
+    return;
+  }
+
+  let htmlParts = [];
+  filtered.forEach((post) => {
+    htmlParts.push(window.sqBuildSinglePostHTML(post, false));
+  });
+
+  if (AppState.posts.length >= AppState.postLimit && !AppState.searchQuery) {
+    htmlParts.push(`<div style="text-align:center; margin:16px 0;"><button class="sq-btn sq-btn-outline" onclick="window.sqLoadMore()"><i class="fa-solid fa-angles-down"></i> عرض المزيد من المساهمات</button></div>`);
+  }
+  container.innerHTML = htmlParts.join('');
+};
+
+window.sqLoadMore = function() { AppState.postLimit += 25; window.sqLoadFeed(); };
+
+window.sqFilterFeed = function(type) {
+  if (!AppState.currentUser && (type === 'following' || type === 'bookmarks')) {
+    sqShowToast("سجل دخولك أولاً لتصفح هذا القسم", "warning");
+    return window.sqLogin();
+  }
+  AppState.currentFilter = type; AppState.activeCategoryFilter = null;
+  document.querySelectorAll('#sq-tabs-bar .sq-tab-pill').forEach(b => b.classList.remove('active'));
+  document.getElementById(`tab-${type}`)?.classList.add('active');
+  AppState.renderedPostSignature = '';
+  window.sqRenderFeed(true);
+};
+
+window.sqDoubleTapLike = function(postId, ownerUid) {
+  if (!AppState.currentUser) return sqShowToast("سجل دخولك أولاً للإعجاب", "warning");
+  const burstContainer = document.getElementById(`heart-burst-${postId}`);
+  if (burstContainer) { burstContainer.innerHTML = `<i class="fa-solid fa-heart sq-heart-burst"></i>`; setTimeout(() => { burstContainer.innerHTML = ''; }, 850); }
+  const post = AppState.posts.find(p => p.id === postId);
+  if (post && !(post.likes || []).includes(AppState.currentUser.uid)) window.sqLike(postId, ownerUid);
+};
+
+window.sqLike = function(postId, ownerUid) {
+  if (!AppState.currentUser) return sqShowToast("سجل دخولك أولاً للإعجاب", "warning");
+  const post = AppState.posts.find(p => p.id === postId); if (!post) return;
+  const uid = AppState.currentUser.uid;
+  const hasLiked = (post.likes || []).includes(uid);
+  if (hasLiked) post.likes = (post.likes || []).filter(id => id !== uid);
+  else {
+    if (!post.likes) post.likes = [];
+    post.likes.push(uid);
+    if (post.linkedBookId) {
+      const b = AppState.booksList.find(x => x.id === post.linkedBookId);
+      if (b) window.SafaqatAI.trackSignal('book', b, 3);
+    }
+  }
+  window.sqPatchPostInteractivity(postId);
+
+  const ref = db.collection("safaqat_quotes").doc(postId);
+  if (hasLiked) ref.update({ likes: firebase.firestore.FieldValue.arrayRemove(uid) });
+  else {
+    ref.update({ likes: firebase.firestore.FieldValue.arrayUnion(uid) });
+    const realTargetUid = ownerUid || post.uid;
+    if (realTargetUid && realTargetUid !== uid) window.sqSendNotif(realTargetUid, postId, `أُعجب ${getRealName(uid, AppState.currentUser.displayName)} بمساهمتك.`);
+  }
+};
+
+window.sqBookmark = function(postId) {
+  if (!AppState.currentUser) return sqShowToast("سجل دخولك لحفظ المساهمات", "warning");
+  const isBooked = (AppState.userData.bookmarks || []).includes(postId);
+  if (isBooked) AppState.userData.bookmarks = AppState.userData.bookmarks.filter(id => id !== postId);
+  else AppState.userData.bookmarks.push(postId);
+  window.sqPatchPostInteractivity(postId);
+
+  const ref = db.collection("safaqat_users").doc(AppState.currentUser.uid);
+  if (isBooked) { ref.update({ bookmarks: firebase.firestore.FieldValue.arrayRemove(postId) }); sqShowToast("أُزيلت من المحفوظات", "warning"); }
+  else { ref.update({ bookmarks: firebase.firestore.FieldValue.arrayUnion(postId) }); sqShowToast("حُفظت في مفضلتك", "success"); }
+};

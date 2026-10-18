@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
+  <title id="sq-dyn-title">صفقات كتابية — المتجر الرسمي للكتب والمجتمع الأدبي</title>
+  <meta id="sq-dyn-desc" name="description" content="متجر ومجتمع صفقات كتابية — المنصة الأدبية الرسمية لاقتناء وتحميل الكتب والروايات ومتابعة دور النشر والكُتّاب.">
+  <meta id="sq-dyn-robots" name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+
+  <!-- وسوم الفهرسة الذكية لمحركات البحث (Google SEO & Open Graph) -->
+  <meta property="og:type" content="website">
+  <meta id="sq-og-title" property="og:title" content="صفقات كتابية — المتجر والمجتمع الأدبي">
+  <meta id="sq-og-desc" property="og:description" content="تصفح أحدث الإصدارات والكتب والروايات، وتابع دور النشر والكُتّاب في منصة صفقات كتابية.">
+  <meta id="sq-og-image" property="og:image" content="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEg68URzujuETQYMt1CLBY8R6t_oYn1obpsfvDOQLmQ_da-30Qn1393-kgrUJ4nBzeLlcyQKHsALCDO5HzKzqAtSxe6jHdIdQxCuYzQ1COqydA-vKaMRgtxa2TzZtbGF-cldsRxCTQ4EtlhT6OzxrTcbWWZ9OeyZHGH5-EppJ-mNkAWRhMpaBOfNynVDqGkx/s3000/58210.jpg">
+  <script id="sq-json-ld" type="application/ld+json">{
+    "@context": "https://schema.org",
+    "@type": "BookStore",
+    "name": "صفقات كتابية",
+    "description": "متجر ومجتمع صفقات كتابية للكتب والروايات ودور النشر العربية"
+  }</script>
+
+  <!-- إعدادات تطبيق الويب التقدمي (PWA) والشعار الرسمي -->
+  <meta name="theme-color" content="#0b1120">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="صفقات كتابية">
+  <link id="sq-favicon-link" rel="icon" type="image/jpeg" href="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEg68URzujuETQYMt1CLBY8R6t_oYn1obpsfvDOQLmQ_da-30Qn1393-kgrUJ4nBzeLlcyQKHsALCDO5HzKzqAtSxe6jHdIdQxCuYzQ1COqydA-vKaMRgtxa2TzZtbGF-cldsRxCTQ4EtlhT6OzxrTcbWWZ9OeyZHGH5-EppJ-mNkAWRhMpaBOfNynVDqGkx/s3000/58210.jpg">
+  <link id="sq-apple-icon-link" rel="apple-touch-icon" href="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEg68URzujuETQYMt1CLBY8R6t_oYn1obpsfvDOQLmQ_da-30Qn1393-kgrUJ4nBzeLlcyQKHsALCDO5HzKzqAtSxe6jHdIdQxCuYzQ1COqydA-vKaMRgtxa2TzZtbGF-cldsRxCTQ4EtlhT6OzxrTcbWWZ9OeyZHGH5-EppJ-mNkAWRhMpaBOfNynVDqGkx/s3000/58210.jpg">
+  <link id="sq-pwa-manifest" rel="manifest">
+
+  <!-- الخطوط العربية ومكتبة الأيقونات العالمية FontAwesome 6 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Amiri:ital,wght@0,400;0,700;1,400&family=Tajawal:wght@400;500;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+
+  <!-- ملف التصميم البصري المستقل -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- شريط التنبيه عند انقطاع الاتصال -->
+  <div id="sq-offline-bar">
+    <i class="fa-solid fa-wifi"></i> وضع عدم الاتصال بالشبكة (تصفح من الذاكرة المحلية)
+  </div>
+
+  <!-- حاوية الإشعارات الفورية العائمة -->
+  <div id="sq-toast-container"></div>
+
+  <div id="sq-app-mount">
+    <!-- الهيدر العلوي البسيط والنظيف (الشعار + اسم الدار + الحساب فقط) -->
+    <header class="sq-header">
+      <a href="javascript:void(0)" class="sq-brand" onclick="window.sqSwitchMainView('store', true)">
+        <img id="sq-header-logo-img" src="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEg68URzujuETQYMt1CLBY8R6t_oYn1obpsfvDOQLmQ_da-30Qn1393-kgrUJ4nBzeLlcyQKHsALCDO5HzKzqAtSxe6jHdIdQxCuYzQ1COqydA-vKaMRgtxa2TzZtbGF-cldsRxCTQ4EtlhT6OzxrTcbWWZ9OeyZHGH5-EppJ-mNkAWRhMpaBOfNynVDqGkx/s3000/58210.jpg" alt="صفقات كتابية">
+        <div>
+          <span class="sq-dyn-app-name" style="display:block; line-height:1.2;">صفقات كتابية</span>
+          <span class="sq-version-tag"><i class="fa-solid fa-layer-group" style="font-size:9px;"></i> الإصدار 1.8</span>
+        </div>
+      </a>
+      <div class="sq-header-actions" id="sq-auth-area"></div>
+    </header>
+
+    <main class="sq-main-container">
+
+      <!-- ================================================= -->
+      <!-- 1. الرئيسية: المتجر، شريط الأحداث والمعارض، دور النشر، والكتب -->
+      <!-- ================================================= -->
+      <section id="sq-view-store" class="sq-page-view active-view">
+
+        <!-- شريط الأحداث والمعارض التلقائي (بأسلوب مصغرات يوتيوب 16:9) -->
+        <div id="sq-events-section" style="display:none; margin-bottom:16px;">
+          <div class="sq-section-head">
+            <div class="sq-section-title">
+              <i class="fa-solid fa-calendar-star" style="color:var(--accent);"></i>
+              <span>الأحداث والمعارض والفعاليات</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <div id="sq-events-dots" class="sq-events-dots"></div>
+              <button id="sq-add-event-top-btn" class="sq-mini-action-btn" style="display:none;" onclick="window.sqOpenEventStudio(null)">
+                <i class="fa-solid fa-plus"></i> حدث جديد
+              </button>
+            </div>
+          </div>
+          <div class="sq-events-carousel-wrap">
+            <div class="sq-events-track" id="sq-events-track" onscroll="window.sqOnEventsScroll(this)"></div>
+          </div>
+        </div>
+
+        <!-- شريط دور النشر المعتمدة (الترابط الشبكي) -->
+        <div id="sq-publishers-section" style="display:none; margin-bottom:16px;">
+          <div class="sq-section-head">
+            <div class="sq-section-title">
+              <i class="fa-solid fa-building-columns" style="color:var(--accent);"></i>
+              <span>دور النشر المعتمدة</span>
+            </div>
+            <span style="font-size:11.5px; color:var(--text-muted); font-weight:700;">اسحب لليمين واليسار للاستكشاف</span>
+          </div>
+          <div class="sq-publishers-rail" id="sq-publishers-rail"></div>
+        </div>
+
+        <!-- بطاقة البحث والفلاتر الذكية للمتجر -->
+        <div class="sq-hub-card" style="padding:15px; margin-bottom:14px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+            <div>
+              <h1 style="font-size:17.5px; font-weight:900; display:flex; align-items:center; gap:8px;">
+                <i class="fa-solid fa-book-bookmark" style="color:var(--accent);"></i>
+                <span>متجر ومكتبة <span class="sq-dyn-app-name">صفقات كتابية</span></span>
+              </h1>
+              <p style="font-size:12px; color:var(--text-muted); margin-top:2px;">تصفح الكتب أفقياً أو شبكياً، واطلب نسختك أو حمّل الكتب المتاحة مباشرة</p>
+            </div>
+            <div id="sq-lib-staff-actions" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
+          </div>
+
+          <!-- محرك البحث الذكي المدعوم بالذكاء الاصطناعي الخفي -->
+          <div class="sq-search-wrapper" style="margin-bottom:12px;">
+            <i class="fa-solid fa-magnifying-glass" style="color:var(--accent);"></i>
+            <input type="text" id="sq-lib-search-input" placeholder="ابحث عن كتاب، رواية، مؤلف، أو دار نشر..." oninput="window.sqOnLibrarySearch(this.value)">
+            <button class="sq-search-clear" id="sq-lib-search-clear" onclick="window.sqClearLibrarySearch()"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+
+          <!-- شريط الفرز الذكي -->
+          <div class="sq-tabs-bar" id="sq-lib-sort-bar" style="margin-bottom:6px;">
+            <button class="sq-tab-pill active" id="libsort-smart" onclick="window.sqSetLibrarySort('smart')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--accent);"></i> مقترح لك</button>
+            <button class="sq-tab-pill" id="libsort-shelves" onclick="window.sqSetLibrarySort('shelves')"><i class="fa-solid fa-bars-staggered" style="color:var(--author);"></i> رفوف التمرير الأفقي</button>
+            <button class="sq-tab-pill" id="libsort-bestseller" onclick="window.sqSetLibrarySort('bestseller')"><i class="fa-solid fa-fire" style="color:var(--danger);"></i> الأكثر مبيعاً</button>
+            <button class="sq-tab-pill" id="libsort-newest" onclick="window.sqSetLibrarySort('newest')"><i class="fa-solid fa-bolt" style="color:var(--warning);"></i> أحدث الإصدارات</button>
+            <button class="sq-tab-pill" id="libsort-toprated" onclick="window.sqSetLibrarySort('toprated')"><i class="fa-solid fa-star" style="color:#fbbf24;"></i> الأعلى تقييماً</button>
+            <button class="sq-tab-pill" id="libsort-free" onclick="window.sqSetLibrarySort('free')"><i class="fa-solid fa-cloud-arrow-down" style="color:var(--success);"></i> متاح للتحميل</button>
+          </div>
+
+          <!-- شريط أقسام الكتب الديناميكي -->
+          <div class="sq-tabs-bar" id="sq-lib-cats-bar" style="margin-bottom:0;"></div>
+        </div>
+
+        <!-- حاوية الرفوف الأفقية والشبكة المرنة -->
+        <div id="sq-library-shelves-container"></div>
+        <div id="sq-library-grid" class="sq-books-grid"></div>
+      </section>
+
+      <!-- ================================================= -->
+      <!-- 2. صفحة تفاصيل الحدث أو المعرض أو العرض المستقلة -->
+      <!-- ================================================= -->
+      <section id="sq-view-event-detail" class="sq-page-view"></section>
+
+      <!-- ================================================= -->
+      <!-- 3. استوديو إنشاء وتعديل الأحداث والمعارض (للإدارة ودور النشر) -->
+      <!-- ================================================= -->
+      <section id="sq-view-publish-event" class="sq-page-view">
+        <div class="sq-inpage-topbar">
+          <div class="sq-inpage-title" id="sq-event-studio-title"><i class="fa-solid fa-calendar-plus" style="color:var(--accent);"></i> إضافة حدث أو معرض جديد</div>
+          <button class="sq-back-pill" onclick="window.sqGoBackView()"><i class="fa-solid fa-arrow-left"></i> رجوع</button>
+        </div>
+        <div class="sq-hub-card" id="sq-event-studio-form"></div>
+      </section>
+
+      <!-- ================================================= -->
+      <!-- 4. صفحة المجتمع الأدبي والقصص المطورة (Stories 2.0) -->
+      <!-- ================================================= -->
+      <section id="sq-view-community" class="sq-page-view">
+        <div class="sq-stories-bar" id="sq-stories-bar"></div>
+
+        <div class="sq-search-container">
+          <div class="sq-search-wrapper">
+            <i class="fa-solid fa-magnifying-glass" style="color:var(--text-muted);"></i>
+            <input type="text" id="sq-search-input" placeholder="ابحث في المنشورات، الاقتباسات، الكُتّاب، أو معرف SKID..." oninput="window.sqOnSearchInput()">
+            <button class="sq-search-clear" id="sq-search-clear-btn" onclick="window.sqClearSearch()"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+        </div>
+
+        <div class="sq-tabs-bar" id="sq-tabs-bar">
+          <button class="sq-tab-pill active" id="tab-for_you" onclick="window.sqFilterFeed('for_you')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--accent);"></i> مقترح لك</button>
+          <button class="sq-tab-pill" id="tab-all" onclick="window.sqFilterFeed('all')"><i class="fa-regular fa-clock"></i> الأحدث</button>
+          <button class="sq-tab-pill" id="tab-following" onclick="window.sqFilterFeed('following')"><i class="fa-solid fa-user-check"></i> متابعاتي</button>
+          <button class="sq-tab-pill" id="tab-bookmarks" onclick="window.sqFilterFeed('bookmarks')"><i class="fa-solid fa-bookmark"></i> المحفوظات</button>
+          <button class="sq-tab-pill" onclick="window.sqFilterByCategory('literature')"><i class="fa-solid fa-feather-pointed"></i> خواطر</button>
+          <button class="sq-tab-pill" onclick="window.sqFilterByCategory('quote')"><i class="fa-solid fa-quote-right"></i> اقتباسات</button>
+          <button class="sq-tab-pill" onclick="window.sqFilterByCategory('review')"><i class="fa-solid fa-star"></i> مراجعات كتب</button>
+          <button class="sq-tab-pill" onclick="window.sqFilterByCategory('article')"><i class="fa-solid fa-newspaper"></i> مقالات</button>
+        </div>
+
+        <div id="sq-feed-title" style="text-align:center; font-weight:800; font-size:13.5px; color:var(--text-main); margin-bottom:12px; display:none;"></div>
+        <div id="sq-feed-container"></div>
+      </section>
+
+      <!-- ================================================= -->
+      <!-- 5. بوابة الإنشاء والنشر الموحدة (Publish Chooser) -->
+      <!-- ================================================= -->
+      <section id="sq-view-publish-chooser" class="sq-page-view">
+        <div class="sq-inpage-topbar">
+          <div class="sq-inpage-title"><i class="fa-solid fa-feather-pointed" style="color:var(--accent);"></i> مركز الإنشاء والنشر</div>
+          <button class="sq-back-pill" onclick="window.sqGoBackView()"><i class="fa-solid fa-arrow-left"></i> رجوع</button>
+        </div>
+        <div id="sq-chooser-cards-body" style="display:flex; flex-direction:column; gap:12px;"></div>
+      </section>
+
+      <!-- ================================================= -->
+      <!-- 6. استوديو كتابة منشور أو مقال أو مراجعة -->
+      <!-- ================================================= -->
+      <section id="sq-view-publish-post" class="sq-page-view">
+        <div class="sq-inpage-topbar">
+          <div class="sq-inpage-title" id="sq-publish-title"><i class="fa-solid fa-feather-pointed" style="color:var(--accent);"></i> استوديو النشر الأدبي</div>
+          <button class="sq-back-pill" onclick="window.sqGoBackView()"><i class="fa-solid fa-arrow-left"></i> رجوع</button>
+        </div>
+        <div class="sq-hub-card">
+          <div id="sq-post-linked-book-banner" style="display:none; margin-bottom:12px;"></div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:4px;">
+            <div>
+              <label class="sq-field-label"><i class="fa-solid fa-layer-group"></i> نوع المساهمة:</label>
+              <select id="sq-post-category" class="sq-select">
+                <option value="literature">خاطرة / نص أدبي</option>
+                <option value="quote">اقتباس من كتاب</option>
+                <option value="review">مراجعة نقدية لكتاب</option>
+                <option value="article">مقال ثقافي</option>
+                <option value="discussion">تساؤل ونقاش</option>
+              </select>
+            </div>
+            <div>
+              <label class="sq-field-label"><i class="fa-solid fa-align-center"></i> محاذاة النص:</label>
+              <select id="sq-post-align" class="sq-select">
+                <option value="right">محاذاة لليمين (مقال/سرد)</option>
+                <option value="center">توسيط شاعري (اقتباس/شعر)</option>
+              </select>
+            </div>
+          </div>
+          <div id="sq-admin-tools" style="display:none; margin-bottom:4px;">
+            <label class="sq-field-label" style="color:var(--danger);"><i class="fa-solid fa-crown"></i> تخصيص إداري للمنشور:</label>
+            <select id="sq-post-type-select" class="sq-select" style="border-color:var(--accent)!important;">
+              <option value="normal">منشور طبيعي</option>
+              <option value="featured">عمل أدبي مميز (إطار ذهبي)</option>
+            </select>
+          </div>
+          <textarea id="sq-post-text" class="sq-input" style="min-height:140px; resize:vertical; margin-bottom:8px!important;" oninput="localStorage.setItem('sq_draft_text', this.value)" placeholder="اكتب نصك الأدبي، مقالك، اقتباسك، أو مراجعتك..."></textarea>
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:10px;">
+            <button type="button" class="sq-btn sq-btn-outline" style="padding:6px 13px!important; font-size:11.5px!important;" onclick="window.sqOpenBookSelectorForPost()"><i class="fa-solid fa-book" style="color:var(--accent);"></i> ربط بكتاب من المتجر</button>
+          </div>
+          <div id="sq-post-book-picker-box" style="display:none; background:var(--bg); border:1px solid var(--border); border-radius:14px; padding:10px; margin-bottom:12px;"></div>
+          <div class="sq-upload-zone">
+            <label for="sq-post-img-input" style="cursor:pointer; display:block;">
+              <i class="fa-regular fa-images" style="font-size:22px; color:var(--accent); margin-bottom:4px;"></i>
+              <div id="sq-upload-status-text" style="font-size:12.5px; font-weight:700;">إرفاق صور مع المنشور (حتى 10 صور)</div>
+            </label>
+            <input type="file" id="sq-post-img-input" accept="image/*" multiple style="display:none;" onchange="window.sqHandlePostImageSelect(this)">
+            <div class="sq-multi-preview-grid" id="sq-multi-preview-grid"></div>
+          </div>
+          <details style="margin-bottom:14px; background:var(--bg); border:1px solid var(--border); border-radius:14px; padding:11px;">
+            <summary style="cursor:pointer; font-weight:800; font-size:12.5px; color:var(--text-main);"><i class="fa-solid fa-sliders" style="color:var(--accent);"></i> توثيق المصدر وإعدادات التعليقات (اختياري)</summary>
+            <div style="margin-top:10px; display:flex; flex-direction:column; gap:6px;">
+              <input type="text" id="sq-meta-source" class="sq-input" style="margin:0!important;" placeholder="اسم المؤلف أو القائل (اختياري)">
+              <input type="text" id="sq-meta-book" class="sq-input" style="margin:0!important;" placeholder="اسم الكتاب أو الرواية (اختياري)">
+              <select id="sq-post-comments-lock" class="sq-select" style="margin:0!important;">
+                <option value="open">التعليقات مفتوحة للجميع</option>
+                <option value="locked">إغلاق التعليقات على هذا المنشور</option>
+              </select>
+            </div>
+          </details>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <label class="sq-anon-toggle">
+              <div class="sq-switch"><input type="checkbox" id="sq-post-anon" onchange="document.getElementById('sq-anon-text').style.color = this.checked ? 'var(--danger)' : 'var(--text-muted)'"><span class="sq-slider"></span></div>
+              <span id="sq-anon-text">نشر كمجهول</span>
+            </label>
+            <button class="sq-btn sq-btn-gold" id="sq-publish-btn" onclick="window.sqPublish()"><i class="fa-solid fa-paper-plane"></i> نشر المساهمة</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================= -->
+      <!-- 7. استوديو رفع وتعديل الكتب المرن (العنوان فقط إلزامي) -->
+      <!-- ================================================= -->
+      <section id="sq-view-publish-book" class="sq-page-view">
+        <div class="sq-inpage-topbar">
+          <div class="sq-inpage-title" id="sq-book-studio-title"><i class="fa-solid fa-book-medical" style="color:var(--accent);"></i> استوديو إدارة ورفع الكتب</div>
+          <button class="sq-back-pill" onclick="window.sqGoBackView()"><i class="fa-solid fa-arrow-left"></i> رجوع</button>
+        </div>
+        <div class="sq-hub-card" id="sq-book-studio-form"></div>
+      </section>
+
+      <!-- ================================================= -->
+      <!-- 8. صفحة الكتاب السينمائية + التحميل في الخلفية + الترابط الشبكي -->
+      <!-- ================================================= -->
+      <section id="sq-view-book-detail" class="sq-page-view"></section>
+
+      <!-- ================================================= -->
+      <!-- 9. صفحة السلة والفواتير (SK-XXXXXX) وتتبع الطلبات -->
+      <!-- ================================================= -->
+      <section id="sq-view-cart-page" class="sq-page-view"></section>
+
+      <!-- ================================================= -->
+      <!-- 10. صفحة المنشور المستقلة والمناقشات -->
+      <!-- ================================================= -->
+      <section id="sq-view-single-post" class="sq-page-view"></section>
+
+      <!-- ================================================= -->
+      <!-- 11. صفحات القصص اليومية (Stories 2.0) -->
+      <!-- ================================================= -->
+      <section id="sq-view-story-publish" class="sq-page-view">
+        <div class="sq-inpage-topbar">
+          <div class="sq-inpage-title"><i class="fa-solid fa-bolt" style="color:var(--accent);"></i> نشر قصة يومية (24 ساعة)</div>
+          <button class="sq-back-pill" onclick="window.sqGoBackView()"><i class="fa-solid fa-arrow-left"></i> رجوع</button>
+        </div>
+        <div class="sq-hub-card">
+          <textarea id="sq-story-text-in" class="sq-input" style="min-height:115px; resize:none;" placeholder="اكتب خاطرة قصيرة، اقتباساً، أو الصق رابط يوتيوب شورتس (YouTube Shorts)..."></textarea>
+          <div style="margin-bottom:10px;">
+            <label class="sq-field-label"><i class="fa-solid fa-palette"></i> تصميم خلفية القصة:</label>
+            <select id="sq-story-bg-select" class="sq-select" style="margin:0!important;">
+              <option value="royal">كحلي ملكي داكن</option>
+              <option value="emerald">زمردي فخم</option>
+              <option value="crimson">عنابي دافئ</option>
+              <option value="purple">بنفسجي ليلي</option>
+              <option value="gold">ذهبي كلاسيكي</option>
+            </select>
+          </div>
+          <div class="sq-upload-zone">
+            <label for="sq-story-img-in" style="cursor:pointer; display:block;">
+              <i class="fa-regular fa-image" style="font-size:22px; color:var(--accent); margin-bottom:4px;"></i>
+              <div id="sq-story-upload-status" style="font-size:12.5px; font-weight:700;">إرفاق صورة للقصة (اختياري)</div>
+            </label>
+            <input type="file" id="sq-story-img-in" accept="image/*" style="display:none;" onchange="window.sqHandleStoryImageUpload(this)">
+          </div>
+          <button class="sq-btn sq-btn-gold" id="sq-story-pub-btn" style="width:100%;" onclick="window.sqPublishStory()"><i class="fa-solid fa-paper-plane"></i> نشر القصة الآن</button>
+        </div>
+      </section>
+
+      <section id="sq-view-story-viewer" class="sq-page-view">
+        <div id="sq-story-viewer-body" class="sq-story-stage"></div>
+      </section>
+
+      <!-- ================================================= -->
+      <!-- 12. صفحة الحساب الشخصي / صفحة دار النشر / صفحة الكاتب -->
+      <!-- ================================================= -->
+      <section id="sq-view-profile" class="sq-page-view">
+        <div class="sq-hub-card" style="text-align:center; position:relative;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <button class="sq-back-pill" onclick="window.sqSwitchMainView('store', true)"><i class="fa-solid fa-arrow-right"></i> الرئيسية</button>
+            <div id="sq-prof-top-left-btns" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
+          </div>
+          <div class="sq-avatar-upload-wrapper" id="sq-prof-avatar-ring">
+            <img id="sq-prof-avatar" src="" class="sq-avatar" style="width:96px; height:96px; border-width:2.5px;" onclick="window.sqOnProfileAvatarClick()">
+            <span id="sq-prof-online-dot" class="sq-online-dot" style="width:14px; height:14px; bottom:4px; left:4px; display:none;"></span>
+            <label for="sq-prof-avatar-input" id="sq-prof-cam-btn" class="sq-avatar-cam-btn" title="تغيير الصورة"><i class="fa-solid fa-camera"></i></label>
+            <input type="file" id="sq-prof-avatar-input" accept="image/*" style="display:none;" onchange="window.sqHandleAvatarUpload(this)">
+          </div>
+          <div id="sq-prof-story-hint" style="display:none; font-size:11px; color:var(--accent); font-weight:800; margin-bottom:6px; cursor:pointer;" onclick="window.sqOnProfileAvatarClick()"><i class="fa-solid fa-circle-play"></i> اضغط لمشاهدة القصة اليومية</div>
+          <h2 id="sq-prof-name" style="margin-bottom:5px; font-size:20px; display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:6px;"></h2>
+          <div id="sq-prof-skid-bar" style="margin-bottom:8px;"></div>
+          <div id="sq-prof-meta-pills" style="display:flex; justify-content:center; flex-wrap:wrap; gap:4px; margin-bottom:8px;"></div>
+          <div id="sq-prof-network-bar" style="margin-bottom:10px;"></div>
+          <div id="sq-prof-level-wrap"></div>
+          <p id="sq-prof-bio" style="color:var(--text-muted); font-size:13.5px; margin-bottom:14px; line-height:1.75; white-space:pre-wrap; background:var(--bg); padding:12px; border-radius:14px; border:1px solid var(--border);"></p>
+          <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-bottom:14px; border-top:1px dashed var(--border); border-bottom:1px dashed var(--border); padding:10px 0;">
+            <div><strong id="sq-prof-posts" style="font-size:17px; color:var(--text-main);">0</strong><br><span style="font-size:11px; color:var(--text-muted); font-weight:bold;">مساهمات</span></div>
+            <div style="cursor:pointer;" onclick="window.sqOpenUsersListView('followers')"><strong id="sq-prof-followers" style="font-size:17px; color:var(--text-main);">0</strong><br><span style="font-size:11px; color:var(--text-muted); font-weight:bold;">متابعون</span></div>
+            <div style="cursor:pointer;" onclick="window.sqOpenUsersListView('following')"><strong id="sq-prof-following" style="font-size:17px; color:var(--text-main);">0</strong><br><span style="font-size:11px; color:var(--text-muted); font-weight:bold;">يتابع</span></div>
+            <div><strong id="sq-prof-views" style="font-size:17px; color:var(--accent);">0</strong><br><span style="font-size:11px; color:var(--text-muted); font-weight:bold;">مشاهدات</span></div>
+          </div>
+          <div id="sq-prof-visitor-actions" style="margin-bottom:10px;"></div>
+          <div class="sq-hub-tabs" id="sq-prof-tabs-bar" style="margin-top:10px; margin-bottom:0;"></div>
+        </div>
+        <div id="sq-prof-tab-content"></div>
+      </section>
+
+      <!-- ================================================= -->
+      <!-- 13. صفحة الإعدادات، المظهر، تثبيت التطبيق، وغرفة قيادة الدار -->
+      <!-- ================================================= -->
+      <section id="sq-view-settings-page" class="sq-page-view">
+        <div class="sq-inpage-topbar">
+          <div class="sq-inpage-title"><i class="fa-solid fa-sliders" style="color:var(--accent);"></i> الإعدادات والقيادة</div>
+          <button class="sq-back-pill" onclick="window.sqGoBackView()"><i class="fa-solid fa-arrow-left"></i> رجوع</button>
+        </div>
+        <div class="sq-hub-tabs" id="sq-settings-nav-tabs"></div>
+        <div id="sq-settings-body-content"></div>
+      </section>
+
+      <!-- ================================================= -->
+      <!-- 14. الصفحات الرسمية والخصوصية وشروط الاستخدام -->
+      <!-- ================================================= -->
+      <section id="sq-view-legal-page" class="sq-page-view">
+        <div class="sq-inpage-topbar" id="sq-legal-topbar">
+          <div class="sq-inpage-title"><i class="fa-solid fa-scale-balanced" style="color:var(--accent);"></i> الصفحات الرسمية والسياسات</div>
+          <button class="sq-back-pill" onclick="window.sqGoBackView()"><i class="fa-solid fa-arrow-left"></i> رجوع</button>
+        </div>
+        <div class="sq-hub-card">
+          <div class="sq-hub-tabs" id="sq-legal-tabs">
+            <button class="sq-hub-tab active" id="legtab-about" onclick="window.sqSwitchLegalTab('about')"><i class="fa-solid fa-building-columns"></i> عن صفقات</button>
+            <button class="sq-hub-tab" id="legtab-privacy" onclick="window.sqSwitchLegalTab('privacy')"><i class="fa-solid fa-user-shield"></i> الخصوصية</button>
+            <button class="sq-hub-tab" id="legtab-terms" onclick="window.sqSwitchLegalTab('terms')"><i class="fa-solid fa-file-contract"></i> شروط الاستخدام</button>
+          </div>
+          <div id="sq-legal-content-box" class="sq-legal-prose"></div>
+          <div id="sq-legal-actions-box" style="margin-top:16px; display:flex; flex-direction:column; gap:8px;"></div>
+        </div>
+      </section>
+
+      <!-- ================================================= -->
+      <!-- 15. صفحات مساعدة (مشاركة البطاقة، قوائم المتابعين، عارض الصور، التحرير) -->
+      <!-- ================================================= -->
+      <section id="sq-view-share-page" class="sq-page-view">
+        <div class="sq-inpage-topbar">
+          <div class="sq-inpage-title"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--accent);"></i> استوديو بطاقة الاقتباس والمشاركة</div>
+          <button class="sq-back-pill" onclick="window.sqGoBackView()"><i class="fa-solid fa-arrow-left"></i> رجوع</button>
+        </div>
+        <div class="sq-hub-card" style="text-align:center;">
+          <canvas id="sq-quote-canvas" width="1080" height="1080" style="width:100%; max-width:280px; aspect-ratio:1/1; border-radius:16px; border:1.5px solid var(--border); margin:0 auto 12px auto; display:block;"></canvas>
+          <div style="display:flex; justify-content:center; gap:6px; margin-bottom:12px;">
+            <button class="sq-btn sq-btn-outline" style="padding:5px 12px!important; font-size:11.5px!important;" onclick="window.sqRenderShareCanvas('royal')">ملكي داكن</button>
+            <button class="sq-btn sq-btn-outline" style="padding:5px 12px!important; font-size:11.5px!important;" onclick="window.sqRenderShareCanvas('parchment')">ورق كلاسيكي</button>
+            <button class="sq-btn sq-btn-outline" style="padding:5px 12px!important; font-size:11.5px!important;" onclick="window.sqRenderShareCanvas('emerald')">زمردي</button>
+          </div>
+          <div style="display:flex; gap:8px; margin-bottom:10px;">
+            <button class="sq-btn sq-btn-gold" style="flex:1;" onclick="window.sqDownloadQuoteImage()"><i class="fa-solid fa-download"></i> حفظ البطاقة</button>
+            <button class="sq-btn" style="flex:1;" onclick="window.sqCopyPostLink()"><i class="fa-solid fa-link"></i> نسخ الرابط</button>
+          </div>
+          <button class="sq-btn sq-btn-outline" style="width:100%; margin-bottom:8px;" onclick="window.sqCopyPost(AppState.sharingPostId)"><i class="fa-regular fa-copy"></i> نسخ النص مع الحقوق</button>
+          <div class="sq-social-grid" id="sq-social-share-links"></div>
+        </div>
+      </section>
+
+      <section id="sq-view-users-list" class="sq-page-view">
+        <div class="sq-inpage-topbar">
+          <div class="sq-inpage-title" id="sq-users-list-title"><i class="fa-solid fa-users" style="color:var(--accent);"></i> القائمة</div>
+          <button class="sq-back-pill" onclick="window.sqGoBackView()"><i class="fa-solid fa-arrow-left"></i> رجوع</button>
+        </div>
+        <div class="sq-hub-card" id="sq-users-list-body" style="display:flex; flex-direction:column; gap:8px;"></div>
+      </section>
+
+      <section id="sq-view-image-viewer" class="sq-page-view">
+        <div class="sq-inpage-topbar">
+          <div class="sq-inpage-title"><i class="fa-regular fa-image" style="color:var(--accent);"></i> معاينة الصورة</div>
+          <div style="display:flex; gap:6px;">
+            <button class="sq-btn sq-btn-gold" style="padding:6px 12px!important; font-size:12px!important;" onclick="window.sqDownloadDirectImage(document.getElementById('sq-fullview-img').src, event)"><i class="fa-solid fa-download"></i> حفظ</button>
+            <button class="sq-back-pill" onclick="window.sqGoBackView()"><i class="fa-solid fa-arrow-left"></i> رجوع</button>
+          </div>
+        </div>
+        <div class="sq-hub-card" style="text-align:center; background:#0b1120; padding:12px;">
+          <img id="sq-fullview-img" src="" style="max-width:100%; max-height:75vh; border-radius:14px; object-fit:contain;">
+        </div>
+      </section>
+
+      <section id="sq-view-prompt-page" class="sq-page-view">
+        <div class="sq-inpage-topbar">
+          <div class="sq-inpage-title" id="sq-prompt-title"><i class="fa-solid fa-pen-to-square" style="color:var(--accent);"></i> تحرير</div>
+          <button class="sq-back-pill" onclick="window.sqGoBackView()"><i class="fa-solid fa-arrow-left"></i> إلغاء</button>
+        </div>
+        <div class="sq-hub-card">
+          <textarea id="sq-prompt-input" class="sq-input" style="min-height:110px; resize:none;"></textarea>
+          <div style="display:flex; gap:8px;">
+            <button class="sq-btn sq-btn-gold" style="flex:1;" onclick="window.sqConfirmCustomPrompt()"><i class="fa-solid fa-check"></i> تأكيد وحفظ</button>
+            <button class="sq-btn sq-btn-outline" onclick="window.sqGoBackView()">إلغاء</button>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- الشريط السفلي الزجاجي العائم ذو الـ 5 تبويبات المعتمدة -->
+    <nav class="sq-glass-dock" id="sq-bottom-dock">
+      <button class="sq-dock-btn active" id="dock-store" onclick="window.sqSwitchMainView('store', true)">
+        <i class="fa-solid fa-store"></i><span>الرئيسية</span>
+      </button>
+      <button class="sq-dock-btn" id="dock-community" onclick="window.sqSwitchMainView('community', true)">
+        <i class="fa-solid fa-feather-pointed"></i><span>المجتمع</span>
+      </button>
+      <div class="sq-dock-center-wrap">
+        <button class="sq-dock-publish" onclick="window.sqHandleDockPublish()" title="إنشاء ونشر">
+          <i class="fa-solid fa-plus"></i>
+        </button>
+      </div>
+      <button class="sq-dock-btn" id="dock-cart" onclick="window.sqSwitchMainView('cart_page')">
+        <span class="sq-dock-dot" id="dock-cart-dot">0</span>
+        <i class="fa-solid fa-bag-shopping"></i><span>السلة والطلبات</span>
+      </button>
+      <button class="sq-dock-btn" id="dock-profile" onclick="window.sqHandleDockProfile()">
+        <span class="sq-dock-dot" id="dock-profile-dot">0</span>
+        <i class="fa-solid fa-user"></i><span>حسابي</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- إطار خفي لتنفيذ التحميل المباشر للكتب في الخلفية دون مغادرة الصفحة -->
+  <iframe id="sq-bg-dl-frame" style="display:none;"></iframe>
+
+  <!-- حزم Firebase الرسمية -->
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+
+  <!-- المحرك البرمجي للمنصة (الذي سننشئه في الخطوة القادمة) -->
+  <script src="app.js"></script>
+</body>
+</html>

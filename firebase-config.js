@@ -1,5 +1,5 @@
 /* =========================================================
-   ملف إعدادات قاعدة البيانات والذكاء الاصطناعي — الإصدار 1.8
+   ملف إعدادات قاعدة البيانات، العملات، والحماية السيادية — الإصدار 1.8
    File: firebase-config.js
    ========================================================= */
 
@@ -9,11 +9,19 @@ const APP_VERSION = "1.8";
 let APP_NAME = "صفقات كتابية";
 let APP_LOGO_URL = "https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEg68URzujuETQYMt1CLBY8R6t_oYn1obpsfvDOQLmQ_da-30Qn1393-kgrUJ4nBzeLlcyQKHsALCDO5HzKzqAtSxe6jHdIdQxCuYzQ1COqydA-vKaMRgtxa2TzZtbGF-cldsRxCTQ4EtlhT6OzxrTcbWWZ9OeyZHGH5-EppJ-mNkAWRhMpaBOfNynVDqGkx/s3000/58210.jpg";
 let DAR_WHATSAPP_NUMBER = "+201016327947";
-let DEFAULT_CURRENCY = "ر.س";
+let DEFAULT_CURRENCY = "SAR";
 const CURRENT_DOMAIN_ORIGIN = window.location.origin;
 const IMGBB_API_KEY = "Bac3eeb4c41bcfcb38f6ada28c50c825";
 
-// إعدادات الاتصال بقاعدة بيانات Firebase الرسمية الخاصة بالمنصة
+// مفتاح API الخاص بالمساعد الأدبي الذكي "راوي"
+const RAWI_GEMINI_API_KEY = "AQ.Ab8RN6LSmhsU9QJSpmDg5V6WCY_8KWiEzx8mgA0twp6uBBA8Vw";
+
+// تهيئة مكتبة PDF.js لنظام القراءة الآمنة داخل الموقع (Read-Only Canvas Mode)
+if (window.pdfjsLib) {
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+}
+
+// إعدادات الاتصال بقاعدة بيانات Firebase الرسمية
 const firebaseConfig = {
   apiKey: "AIzaSyBO07TpLj8v72VX37aSTK0YAYY9OOCq2Yo",
   authDomain: "safaqatkitabiya1.firebaseapp.com",
@@ -36,22 +44,97 @@ try {
   auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(() => {});
 } catch (e) {}
 
-// حسابات الإدارة العليا المعتمدة (الفقاعة الحمراء)
-const ADMINS = [
+// =========================================================
+// 🛡️ الحسابان السياديان الأساسيان (Super Admins)
+// لهما وحدهما حق منح أو نزع الصلاحيات ولا يمكن لأحدهما نزع صلاحيات الآخر
+// =========================================================
+const SUPER_ADMINS = [
   'safaqatkitabiya@gmail.com',
   'rawialshamal@gmail.com'
 ];
+const ADMINS = SUPER_ADMINS;
+
+window.sqIsSuperAdminEmail = function(email) {
+  if (!email) return false;
+  return SUPER_ADMINS.includes(String(email).toLowerCase().trim());
+};
+
+window.sqIsSuperAdminUid = function(uid) {
+  if (!uid) return false;
+  if (uid === 'DAR_MAIN') return true;
+  const u = (window.AppState && window.AppState.allUsers && window.AppState.allUsers[uid]) ? window.AppState.allUsers[uid] : {};
+  return window.sqIsSuperAdminEmail(u.email);
+};
+
+window.sqIsCurrentUserSuperAdmin = function() {
+  if (!window.AppState || !window.AppState.currentUser) return false;
+  return window.sqIsSuperAdminEmail(window.AppState.currentUser.email);
+};
 
 const DEFAULT_PIC = "https://cdn-icons-png.flaticon.com/512/149/149071.png";
 const ANON_PIC = "https://cdn-icons-png.flaticon.com/512/2829/2829835.png";
 
-// تصنيفات المساهمات الأدبية في المجتمع
+// =========================================================
+// 💰 نظام العملات الثلاث المعتمد (ريال سعودي، دولار، جنيه مصري)
+// =========================================================
+const CURRENCY_CONFIG = {
+  SAR: { code: 'SAR', symbol: 'ر.س', name: 'ريال سعودي', rateFromSAR: 1 },
+  USD: { code: 'USD', symbol: '$', name: 'دولار أمريكي', rateFromSAR: 0.27 },
+  EGP: { code: 'EGP', symbol: 'ج.م', name: 'جنيه مصري', rateFromSAR: 13.2 }
+};
+
+window.sqFormatBookPrice = function(book, targetCurrencyCode = null) {
+  if (!book) return { current: 0, old: 0, symbol: 'ر.س', code: 'SAR', isFree: true };
+  const currCode = targetCurrencyCode || (window.AppState && window.AppState.displayCurrency) || 'SAR';
+  const cfg = CURRENCY_CONFIG[currCode] || CURRENCY_CONFIG.SAR;
+
+  let curVal = 0;
+  let oldVal = 0;
+
+  // إذا كان الكاتب/الدار قد حدد سعراً مخصصاً لهذه العملة تحديداً نأخذه مباشرة
+  if (currCode === 'SAR' && book.priceSAR !== undefined && book.priceSAR !== '') {
+    curVal = parseFloat(book.priceSAR) || 0;
+    oldVal = parseFloat(book.oldPriceSAR) || 0;
+  } else if (currCode === 'USD' && book.priceUSD !== undefined && book.priceUSD !== '' && Number(book.priceUSD) > 0) {
+    curVal = parseFloat(book.priceUSD) || 0;
+    oldVal = parseFloat(book.oldPriceUSD) || 0;
+  } else if (currCode === 'EGP' && book.priceEGP !== undefined && book.priceEGP !== '' && Number(book.priceEGP) > 0) {
+    curVal = parseFloat(book.priceEGP) || 0;
+    oldVal = parseFloat(book.oldPriceEGP) || 0;
+  } else {
+    // التحويل التلقائي الذكي من السعر الأساسي
+    const basePrice = parseFloat(book.priceSAR !== undefined ? book.priceSAR : book.price) || 0;
+    const baseOld = parseFloat(book.oldPriceSAR !== undefined ? book.oldPriceSAR : book.oldPrice) || 0;
+    const baseCurr = (book.currency === '$' || book.currency === 'USD') ? 'USD' : ((book.currency === 'ج.م' || book.currency === 'EGP') ? 'EGP' : 'SAR');
+    const baseCfg = CURRENCY_CONFIG[baseCurr] || CURRENCY_CONFIG.SAR;
+
+    if (basePrice > 0) {
+      const inSar = basePrice / baseCfg.rateFromSAR;
+      curVal = Number((inSar * cfg.rateFromSAR).toFixed(currCode === 'USD' ? 2 : 0));
+    }
+    if (baseOld > 0) {
+      const oldInSar = baseOld / baseCfg.rateFromSAR;
+      oldVal = Number((oldInSar * cfg.rateFromSAR).toFixed(currCode === 'USD' ? 2 : 0));
+    }
+  }
+
+  return {
+    current: curVal,
+    old: oldVal,
+    symbol: cfg.symbol,
+    code: cfg.code,
+    isFree: curVal <= 0
+  };
+};
+
+// تصنيفات المساهمات الأدبية في المجتمع (مع البودكاست واللمسة الودية)
 const POST_CATEGORIES = {
   literature: { label: 'خاطرة / نص أدبي', icon: 'fa-feather-pointed' },
   quote:      { label: 'اقتباس من كتاب', icon: 'fa-quote-right' },
   review:     { label: 'مراجعة كتاب', icon: 'fa-star' },
   article:    { label: 'مقال ثقافي', icon: 'fa-newspaper' },
-  discussion: { label: 'تساؤل ونقاش', icon: 'fa-comments' }
+  podcast:    { label: 'بودكاست وصوتيات', icon: 'fa-podcast' },
+  discussion: { label: 'فضفضة ونقاش قراء', icon: 'fa-comments' }
 };
 
 // الأقسام الأساسية للكتب في المتجر والمكتبة
@@ -75,7 +158,7 @@ const STAFF_PERMISSIONS_MAP = {
   manage_ads:     { label: 'إدارة الأحداث والمعارض', desc: 'إضافة وتعديل المعارض والأحداث في الشريط التلقائي العلوي', icon: 'fa-calendar-star' }
 };
 
-// مراحل تتبع الفواتير والطلبات
+// مراحل تتبع الفواتير والطلبات (العمولة تُحتسب حصرياً عند مرحلة completed)
 const ORDER_STATUS_MAP = {
   pending_review: { label: 'تمت المراجعة', color: '#f59e0b', icon: 'fa-file-circle-check', step: 1 },
   contacted:      { label: 'تم التواصل', color: '#0284c7', icon: 'fa-phone-volume', step: 2 },
@@ -120,20 +203,24 @@ const STORY_GRADIENTS = {
   gold:    'linear-gradient(135deg, #78350f 0%, #451a03 100%)'
 };
 
-// الحالة المركزية للمنصة (AppState v1.8)
+// الحالة المركزية الشاملة للمنصة (AppState v1.8)
 window.AppState = {
   currentUser: null,
   isAdmin: false,
+  isSuperAdmin: false,
+  displayCurrency: localStorage.getItem('sq_display_currency_v18') || 'SAR',
   userData: {
     following: [],
     blockedUsers: [],
     bookmarks: [],
     savedBooks: [],
     readingShelf: {},
+    readingProgress: {}, // حفظ رقم الصفحة لكل كتاب في القارئ الآمن
     currentlyReadingBookId: '',
     permissions: [],
-    linkedPublishers: [], // دور النشر المرتبط بها الكاتب
-    publisherWhatsapp: '', // رقم واتساب خاص بدار النشر لاستقبال طلباتها
+    linkedPublishers: [],
+    publisherWhatsapp: '',
+    commissionRate: 10, // نسبة عمولة المنصة المتفق عليها مع دار النشر (%)
     aiInterests: { cats: {}, authors: {}, keywords: {}, viewedBooks: [] },
     theme: 'auto',
     customName: '',
@@ -147,6 +234,7 @@ window.AppState = {
     isBanned: false,
     isAuthor: false,    // شارة التوثيق الزرقاء (للكُتّاب والمؤلفين)
     isPublisher: false, // شارة التوثيق الذهبية (لدور النشر المعتمدة)
+    isAdminUser: false, // شارة الإدارة الحمراء
     agreedToTerms: false,
     joinedAt: 0,
     lastActive: 0
@@ -183,6 +271,27 @@ window.AppState = {
   viewedProfileUid: null,
   activeProfileTab: 'posts',
 
+  // حالة قارئ الكتب الآمن داخل الموقع (Read-Only Canvas Reader)
+  readerBookId: null,
+  readerPdfDoc: null,
+  readerPageNum: 1,
+  readerTotalPages: 1,
+  readerScale: 1.25,
+  readerRendering: false,
+
+  // حالة المشغل الصوتي العائم للبودكاست (Floating PiP Player)
+  podcastActive: false,
+  podcastType: '', // 'youtube' | 'audio'
+  podcastMediaId: '',
+  podcastTitle: '',
+  podcastAuthor: '',
+  podcastPlaying: false,
+  podcastExpanded: false,
+
+  // حالة المساعد الذكي "راوي"
+  rawiOpen: false,
+  rawiHistory: [],
+
   currentFilter: 'for_you',
   activeCategoryFilter: null,
   searchQuery: '',
@@ -210,6 +319,7 @@ window.AppState = {
   editingBookId: null,
   selectedAuthorUidForBook: '',
   selectedPublisherUidForBook: 'DAR_MAIN',
+  selectedBookCategories: ['novels'],
   pendingBookCover: '',
   showDownloadConfirmForBook: false,
 
@@ -226,8 +336,7 @@ window.AppState = {
 };
 
 // =========================================================
-// 🧠 محرك الذكاء الاصطناعي الخفي (Safaqat Silent AI Affinity Engine)
-// يحلل اهتمامات القارئ بصمت ويرتب المتجر والبحث والكتب المشابهة
+// 🧭 محرك التوصيات الصامت (يرتب المتجر والمقترحات حسب ذائقة القارئ دون ذكر الذكاء الاصطناعي)
 // =========================================================
 window.SafaqatAI = {
   getProfile: function() {
@@ -245,9 +354,7 @@ window.SafaqatAI = {
   },
 
   saveProfile: function(prof) {
-    try {
-      localStorage.setItem('sq_ai_interest_profile_v18', JSON.stringify(prof));
-    } catch (e) {}
+    try { localStorage.setItem('sq_ai_interest_profile_v18', JSON.stringify(prof)); } catch (e) {}
     if (AppState.currentUser) {
       db.collection("safaqat_users").doc(AppState.currentUser.uid).update({
         aiInterests: {
@@ -268,7 +375,8 @@ window.SafaqatAI = {
     if (!prof.viewedBooks) prof.viewedBooks = [];
 
     if (type === 'book' && payload) {
-      if (payload.category) prof.cats[payload.category] = (prof.cats[payload.category] || 0) + weight;
+      const bookCats = Array.isArray(payload.categories) && payload.categories.length ? payload.categories : (payload.category ? [payload.category] : []);
+      bookCats.forEach(c => { prof.cats[c] = (prof.cats[c] || 0) + weight; });
       const authKey = payload.authorUid || payload.authorName || '';
       if (authKey) prof.authors[authKey] = (prof.authors[authKey] || 0) + weight;
       if (payload.id && !prof.viewedBooks.includes(payload.id)) {
@@ -291,7 +399,9 @@ window.SafaqatAI = {
     const st = window.sqGetBookStats ? window.sqGetBookStats(book) : { avgRating: 5, salesCount: 0, readersCount: 0 };
     let score = 0;
 
-    if (book.category && prof.cats[book.category]) score += prof.cats[book.category] * 6;
+    const bookCats = Array.isArray(book.categories) && book.categories.length ? book.categories : (book.category ? [book.category] : []);
+    bookCats.forEach(c => { if (prof.cats[c]) score += prof.cats[c] * 6; });
+
     const authKey = book.authorUid || book.authorName || '';
     if (authKey && prof.authors[authKey]) score += prof.authors[authKey] * 8;
     if (book.authorUid && (AppState.userData.following || []).includes(book.authorUid)) score += 35;
@@ -328,12 +438,14 @@ window.SafaqatAI = {
 
   getSimilarBooks: function(currentBook, limit = 6) {
     if (!currentBook || !AppState.booksList.length) return [];
+    const curCats = new Set(Array.isArray(currentBook.categories) && currentBook.categories.length ? currentBook.categories : [currentBook.category]);
     const curWords = new Set(((currentBook.title || '') + ' ' + (currentBook.desc || '')).split(/\s+/).filter(w => w.length > 3));
     return AppState.booksList
       .filter(b => b.id !== currentBook.id)
       .map(b => {
         let simScore = this.scoreBookForUser(b) * 0.35;
-        if (b.category && b.category === currentBook.category) simScore += 55;
+        const bCats = Array.isArray(b.categories) && b.categories.length ? b.categories : [b.category];
+        bCats.forEach(c => { if (curCats.has(c)) simScore += 50; });
         if ((b.authorUid && b.authorUid === currentBook.authorUid) || (b.authorName && b.authorName === currentBook.authorName)) simScore += 70;
         if (b.publisherUid && b.publisherUid === currentBook.publisherUid) simScore += 30;
         const bText = (b.title || '') + ' ' + (b.desc || '');
@@ -347,32 +459,46 @@ window.SafaqatAI = {
 };
 
 // =========================================================
-// 🛠️ دوال المساعدة الأساسية وتحويل روابط Google Drive للتحميل المباشر
+// 🛠️ دوال المساعدة الأساسية وتحويل روابط Google Drive
 // =========================================================
 window.sqHasPermission = function(permKey) {
   if (!AppState.currentUser) return false;
-  if (AppState.isAdmin) return true;
-  if (permKey === 'manage_books' && AppState.userData && AppState.userData.isPublisher) return true;
-  if (permKey === 'manage_orders' && AppState.userData && AppState.userData.isPublisher) return true;
+  if (AppState.isAdmin || window.sqIsCurrentUserSuperAdmin()) return true;
+  if ((permKey === 'manage_books' || permKey === 'manage_orders' || permKey === 'manage_ads') && AppState.userData && AppState.userData.isPublisher) return true;
   return (AppState.userData.permissions || []).includes(permKey);
 };
 
 window.sqIsStaffMember = function() {
   if (!AppState.currentUser) return false;
-  if (AppState.isAdmin) return true;
+  if (AppState.isAdmin || window.sqIsCurrentUserSuperAdmin()) return true;
   if (AppState.userData && AppState.userData.isPublisher) return true;
   return (AppState.userData.permissions || []).length > 0;
 };
 
-// تحويل أي رابط مشاركة من Google Drive إلى رابط تحميل مباشر فوري
-window.sqFormatGoogleDriveDownloadUrl = function(rawUrl) {
+// استخراج معرف ملف Google Drive لتحميله بصمت أو عرضه داخل القارئ الآمن
+window.sqExtractGoogleDriveFileId = function(rawUrl) {
   if (!rawUrl) return '';
   const url = String(rawUrl).trim();
-  const fileIdMatch = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || url.match(/[?&]id=([a-zA-Z0-9_-]+)/) || url.match(/\/d\/([a-zA-Z0-9_-]+)/);
-  if (fileIdMatch && fileIdMatch[1]) {
-    return `https://drive.google.com/uc?export=download&id=${fileIdMatch[1]}`;
+  const match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || url.match(/[?&]id=([a-zA-Z0-9_-]+)/) || url.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  return (match && match[1]) ? match[1] : '';
+};
+
+window.sqFormatGoogleDriveDownloadUrl = function(rawUrl) {
+  if (!rawUrl) return '';
+  const fileId = window.sqExtractGoogleDriveFileId(rawUrl);
+  if (fileId) {
+    return `https://drive.google.com/uc?export=download&id=${fileId}`;
   }
-  return url;
+  return String(rawUrl).trim();
+};
+
+window.sqFormatGoogleDrivePreviewUrl = function(rawUrl) {
+  if (!rawUrl) return '';
+  const fileId = window.sqExtractGoogleDriveFileId(rawUrl);
+  if (fileId) {
+    return `https://drive.google.com/file/d/${fileId}/preview`;
+  }
+  return String(rawUrl).trim();
 };
 
 function decodeEntities(str) {
@@ -393,7 +519,7 @@ function escapeHtml(str) {
 }
 
 function getRealName(uid, embeddedFallback) {
-  if (uid === 'DAR_MAIN') return APP_NAME;
+  if (!uid || uid === 'DAR_MAIN') return APP_NAME;
   const u = AppState.allUsers[uid];
   if (u && u.customName && u.customName.trim() !== '') return decodeEntities(u.customName);
   if (u && u.displayName && u.displayName.trim() !== '') return decodeEntities(u.displayName);
@@ -402,7 +528,7 @@ function getRealName(uid, embeddedFallback) {
 }
 
 function getRealPhoto(uid, embeddedPhotoFallback) {
-  if (uid === 'DAR_MAIN') return APP_LOGO_URL;
+  if (!uid || uid === 'DAR_MAIN') return APP_LOGO_URL;
   const u = AppState.allUsers[uid];
   if (u && u.photoURL && u.photoURL.trim() !== '') return u.photoURL;
   if (embeddedPhotoFallback && embeddedPhotoFallback.trim() !== '') return embeddedPhotoFallback;
@@ -413,7 +539,7 @@ function sqIsAdminUid(uid) {
   if (!uid) return false;
   if (uid === 'DAR_MAIN') return true;
   const u = AppState.allUsers[uid] || {};
-  return Boolean(u.isAdminUser || ADMINS.includes(u.email) || ADMINS.includes(uid));
+  return Boolean(u.isAdminUser || window.sqIsSuperAdminEmail(u.email));
 }
 
 function sqFormatRelativeTime(ts) {
@@ -452,7 +578,7 @@ window.sqShowToast = function(message, type = 'success') {
   toast.innerHTML = `${icon} <span>${escapeHtml(message)}</span>`;
   container.appendChild(toast);
   setTimeout(() => toast.classList.add('show'), 10);
-  setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 250); }, 3200);
+  setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 250); }, 3400);
 };
 
 window.sqCompressAndUploadToImgBB = async function(file, maxW = 960, quality = 0.78) {

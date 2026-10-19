@@ -969,3 +969,1520 @@ window.sqBuildBookCardHTML = function(book) {
     </div>
   `;
 };
+/* =========================================================
+   المحرك البرمجي الشامل — الإصدار 1.8
+   File: app.js (الجزء 2 من 5)
+   يشمل: صفحة الكتاب المتجانسة، القارئ الآمن (Read-Only Canvas)، التحميل الصامت،
+         استوديو الكتب المرن (3 عملات + تعدد الفئات + كاشف التشابه)، والسلة والفواتير
+   ========================================================= */
+
+// =========================================================
+// 📖 صفحة الكتاب الاحترافية المتجانسة + التحميل الصامت + القراءة الآمنة
+// =========================================================
+window.sqOpenBookDetail = function(bookId) {
+  window.sqCloseAllMenus();
+  AppState.viewingBookId = bookId;
+  AppState.showDownloadConfirmForBook = false;
+  const book = AppState.booksList.find(b => b.id === bookId);
+  if (book) window.SafaqatAI.trackSignal('book', book, 3);
+  window.sqRecordBookView(bookId);
+  window.sqSwitchMainView('book_detail');
+  window.sqRenderBookDetailView();
+};
+
+window.sqRecordBookView = function(bookId) {
+  if (!bookId) return;
+  const vKey = 'sq_bv_' + bookId;
+  if (sessionStorage.getItem(vKey)) return;
+  sessionStorage.setItem(vKey, '1');
+  const b = AppState.booksList.find(x => x.id === bookId);
+  if (b) b.views = (b.views || 1) + 1;
+  db.collection("safaqat_books").doc(bookId).update({ views: firebase.firestore.FieldValue.increment(1) }).catch(() => {});
+};
+
+// إظهار / إخفاء شريط التأكيد قبل التحميل
+window.sqRequestBookDownload = function(bookId) {
+  AppState.showDownloadConfirmForBook = !AppState.showDownloadConfirmForBook;
+  window.sqRenderBookDetailView();
+};
+
+// تنفيذ التحميل الصامت في الخلفية دون إخراج المستخدم إلى البريد أو نافذة خارجية
+window.sqExecuteBookDownload = async function(bookId) {
+  const book = AppState.booksList.find(b => b.id === bookId);
+  if (!book || !book.downloadUrl) return;
+
+  AppState.showDownloadConfirmForBook = false;
+  window.SafaqatAI.trackSignal('book', book, 5);
+
+  book.downloadsCount = (Number(book.downloadsCount) || 0) + 1;
+  db.collection("safaqat_books").doc(bookId).update({
+    downloadsCount: firebase.firestore.FieldValue.increment(1),
+    readsCount: firebase.firestore.FieldValue.increment(1)
+  }).catch(() => {});
+
+  window.sqRenderBookDetailView();
+  sqShowToast(`بدأ تحميل كتاب "${book.title}" في الخلفية الآن.. قراءة ممتعة!`, "success");
+
+  const directUrl = window.sqFormatGoogleDriveDownloadUrl(book.downloadUrl);
+
+  // محاولة التحميل الصامت عبر Blob أولاً، ثم عبر إطار خفي صامت دون مغادرة الصفحة
+  try {
+    let dlIframe = document.getElementById('sq-silent-dl-iframe');
+    if (!dlIframe) {
+      dlIframe = document.createElement('iframe');
+      dlIframe.id = 'sq-silent-dl-iframe';
+      dlIframe.style.display = 'none';
+      document.body.appendChild(dlIframe);
+    }
+    dlIframe.src = directUrl;
+  } catch (e) {}
+};
+
+// =========================================================
+// 🛡️ نظام القراءة الآمنة داخل الموقع (Read-Only Canvas Reader + حفظ الصفحة)
+// =========================================================
+window.sqGetSavedReaderPage = function(bookId) {
+  if (!bookId) return 1;
+  try {
+    const localMap = JSON.parse(localStorage.getItem('sq_reading_progress_v18') || '{}');
+    if (localMap[bookId]) return Math.max(1, parseInt(localMap[bookId], 10));
+  } catch (e) {}
+  if (AppState.userData && AppState.userData.readingProgress && AppState.userData.readingProgress[bookId]) {
+    return Math.max(1, parseInt(AppState.userData.readingProgress[bookId], 10));
+  }
+  return 1;
+};
+
+window.sqSaveReaderPageProgress = function(bookId, pageNum) {
+  if (!bookId || !pageNum) return;
+  const p = Math.max(1, parseInt(pageNum, 10));
+  try {
+    const localMap = JSON.parse(localStorage.getItem('sq_reading_progress_v18') || '{}');
+    localMap[bookId] = p;
+    localStorage.setItem('sq_reading_progress_v18', JSON.stringify(localMap));
+  } catch (e) {}
+
+  if (!AppState.userData.readingProgress) AppState.userData.readingProgress = {};
+  AppState.userData.readingProgress[bookId] = p;
+
+  if (AppState.currentUser) {
+    db.collection("safaqat_users").doc(AppState.currentUser.uid).update({
+      [`readingProgress.${bookId}`]: p,
+      currentlyReadingBookId: bookId
+    }).catch(() => {});
+  }
+  const progTxt = document.getElementById('sq-reader-progress-text');
+  if (progTxt) progTxt.innerText = `تم حفظ موضع قراءتك تلقائياً عند الصفحة (${p})`;
+};
+
+window.sqOpenBookReader = async function(bookId) {
+  const book = AppState.booksList.find(b => b.id === bookId);
+  if (!book || !book.downloadUrl) {
+    return sqShowToast("ملف القراءة غير مرفق لهذا الكتاب حالياً", "warning");
+  }
+
+  AppState.readerBookId = bookId;
+  AppState.readerPdfDoc = null;
+  AppState.readerPageNum = window.sqGetSavedReaderPage(bookId);
+  AppState.readerScale = 1.25;
+
+  window.SafaqatAI.trackSignal('book', book, 5);
+  db.collection("safaqat_books").doc(bookId).update({ readsCount: firebase.firestore.FieldValue.increment(1) }).catch(() => {});
+
+  window.sqSwitchMainView('book_reader');
+
+  const titleEl = document.getElementById('sq-reader-book-title');
+  const statusEl = document.getElementById('sq-reader-status-msg');
+  const canvas = document.getElementById('sq-pdf-canvas');
+  const driveFrame = document.getElementById('sq-drive-preview-frame');
+  const pageIn = document.getElementById('sq-reader-page-input');
+  const totalEl = document.getElementById('sq-reader-total-pages');
+
+  if (titleEl) titleEl.innerText = book.title;
+  if (pageIn) pageIn.value = AppState.readerPageNum;
+  if (statusEl) {
+    statusEl.style.display = 'block';
+    statusEl.innerHTML = `<i class="fa-solid fa-spinner fa-spin fa-2x" style="color:var(--accent); margin-bottom:10px;"></i><br>جاري تجهيز صفحات الكتاب للقراءة الآمنة...<br><span style="font-size:11.5px; color:var(--accent);">سيتم فتح الكتاب على الصفحة (${AppState.readerPageNum}) التي توقفت عندها</span>`;
+  }
+  if (canvas) canvas.style.display = 'none';
+  if (driveFrame) driveFrame.style.display = 'none';
+
+  const rawUrl = String(book.downloadUrl).trim();
+  const driveId = window.sqExtractGoogleDriveFileId(rawUrl);
+
+  // إذا كان رابط PDF مباشر يدعم Canvas نرسمه عبر PDF.js، وإذا كان Google Drive نستخدم عارض القراءة المحمي المدمج مع حفظ الصفحة
+  if (!driveId && window.pdfjsLib) {
+    try {
+      const loadingTask = window.pdfjsLib.getDocument(rawUrl);
+      const pdfDoc = await loadingTask.promise;
+      AppState.readerPdfDoc = pdfDoc;
+      AppState.readerTotalPages = pdfDoc.numPages;
+      if (AppState.readerPageNum > AppState.readerTotalPages) AppState.readerPageNum = 1;
+      if (totalEl) totalEl.innerText = `من ${AppState.readerTotalPages}`;
+      if (statusEl) statusEl.style.display = 'none';
+      if (canvas) canvas.style.display = 'block';
+      window.sqRenderCurrentPdfPage();
+      return;
+    } catch (err) {
+      console.warn("Direct PDF Canvas fallback to embedded reader:", err);
+    }
+  }
+
+  // وضع القراءة المحمي لملفات Google Drive والروابط الخارجية داخل الصفحة بدون خروج
+  if (statusEl) statusEl.style.display = 'none';
+  if (driveFrame) {
+    driveFrame.style.display = 'block';
+    const previewUrl = driveId
+      ? `https://drive.google.com/file/d/${driveId}/preview`
+      : `https://docs.google.com/gview?embedded=true&url=${encodeURIComponent(rawUrl)}`;
+    driveFrame.src = previewUrl;
+  }
+  if (totalEl) totalEl.innerText = `(علامتك المحفوظة: ص ${AppState.readerPageNum})`;
+  window.sqSaveReaderPageProgress(bookId, AppState.readerPageNum);
+};
+
+window.sqRenderCurrentPdfPage = async function() {
+  if (!AppState.readerPdfDoc || AppState.readerRendering) return;
+  AppState.readerRendering = true;
+  try {
+    const page = await AppState.readerPdfDoc.getPage(AppState.readerPageNum);
+    const viewport = page.getViewport({ scale: AppState.readerScale });
+    const canvas = document.getElementById('sq-pdf-canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+    const pageIn = document.getElementById('sq-reader-page-input');
+    if (pageIn) pageIn.value = AppState.readerPageNum;
+    window.sqSaveReaderPageProgress(AppState.readerBookId, AppState.readerPageNum);
+  } catch (e) {}
+  AppState.readerRendering = false;
+};
+
+window.sqChangeReaderPage = function(delta) {
+  const nextP = Math.max(1, AppState.readerPageNum + delta);
+  if (AppState.readerPdfDoc && nextP > AppState.readerTotalPages) return;
+  AppState.readerPageNum = nextP;
+  const pageIn = document.getElementById('sq-reader-page-input');
+  if (pageIn) pageIn.value = AppState.readerPageNum;
+  if (AppState.readerPdfDoc) {
+    window.sqRenderCurrentPdfPage();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } else {
+    window.sqSaveReaderPageProgress(AppState.readerBookId, AppState.readerPageNum);
+    sqShowToast(`تم حفظ علامة الوقوف عند الصفحة ${AppState.readerPageNum}`, "success");
+  }
+};
+
+window.sqJumpToReaderPage = function(val) {
+  let p = Math.max(1, parseInt(val, 10) || 1);
+  if (AppState.readerPdfDoc && p > AppState.readerTotalPages) p = AppState.readerTotalPages;
+  AppState.readerPageNum = p;
+  if (AppState.readerPdfDoc) {
+    window.sqRenderCurrentPdfPage();
+  } else {
+    window.sqSaveReaderPageProgress(AppState.readerBookId, AppState.readerPageNum);
+    sqShowToast(`تم حفظ علامة الوقوف عند الصفحة ${AppState.readerPageNum}`, "success");
+  }
+};
+
+window.sqReaderZoom = function(delta) {
+  AppState.readerScale = Math.min(2.5, Math.max(0.75, AppState.readerScale + delta));
+  if (AppState.readerPdfDoc) window.sqRenderCurrentPdfPage();
+};
+
+window.sqCloseBookReader = function() {
+  if (AppState.readerBookId) {
+    window.sqOpenBookDetail(AppState.readerBookId);
+  } else {
+    window.sqSwitchMainView('store');
+  }
+};
+
+window.sqToggleSaveBookToLibrary = function(bookId) {
+  if (!AppState.currentUser) { sqShowToast("سجل دخولك الأول عشان تحفظ الكتاب في مكتبتك", "warning"); return window.sqLogin(); }
+  const book = AppState.booksList.find(b => b.id === bookId);
+  const saved = AppState.userData.savedBooks || [];
+  const isSaved = saved.includes(bookId);
+  const ref = db.collection("safaqat_users").doc(AppState.currentUser.uid);
+
+  if (isSaved) {
+    AppState.userData.savedBooks = saved.filter(id => id !== bookId);
+    ref.update({ savedBooks: firebase.firestore.FieldValue.arrayRemove(bookId) });
+    sqShowToast("أُزيل الكتاب من مكتبتك المحفوظة", "warning");
+  } else {
+    AppState.userData.savedBooks = [...saved, bookId];
+    if (book) window.SafaqatAI.trackSignal('book', book, 5);
+    ref.update({ savedBooks: firebase.firestore.FieldValue.arrayUnion(bookId) });
+    sqShowToast("تم حفظ الكتاب في (مكتبتي) داخل حسابك!", "success");
+  }
+  if (AppState.activeMainView === 'book_detail') window.sqRenderBookDetailView();
+};
+
+// عرض صفحة الكتاب بالتصميم الجديد المتجانس مع هوية الموقع (الغلاف في الزاوية + المؤلف والناشر متجاوران بحجم أنيق + قوائم منسدلة)
+window.sqRenderBookDetailView = function() {
+  const container = document.getElementById('sq-view-book-detail');
+  if (!container) return;
+  const book = AppState.booksList.find(b => b.id === AppState.viewingBookId);
+  if (!book) {
+    container.innerHTML = `
+      <div class="sq-inpage-topbar">
+        <div class="sq-inpage-title">تفاصيل الكتاب</div>
+        <button class="sq-back-pill" onclick="window.sqSwitchMainView('store')"><i class="fa-solid fa-arrow-left"></i> المتجر</button>
+      </div>
+      <div class="sq-hub-card" style="text-align:center; padding:40px 20px;">
+        <p style="color:var(--text-muted); margin-bottom:14px;">جاري تحميل بيانات الكتاب...</p>
+        <button class="sq-btn" onclick="window.sqSwitchMainView('store')">العودة للمتجر</button>
+      </div>
+    `;
+    return;
+  }
+
+  const st = window.sqGetBookStats(book);
+  const mergedCats = window.sqGetMergedBookCategories();
+  const bookCatsList = (Array.isArray(book.categories) && book.categories.length) ? book.categories : [book.category || 'novels'];
+  const catsBadgesHtml = bookCatsList.map(ck => {
+    const lbl = (mergedCats[ck] && mergedCats[ck].label) ? mergedCats[ck].label : 'إصدار أدبي';
+    return `<span class="sq-status-pill" style="margin:0; cursor:pointer;" onclick="window.sqSwitchMainView('store'); window.sqSetBookCatFilter('${ck}');"><i class="fa-solid fa-tag" style="color:var(--accent);"></i> ${escapeHtml(lbl)}</span>`;
+  }).join(' ');
+
+  // بيانات الكاتب والترابط الشبكي
+  const authorDisplay = book.authorUid ? getRealName(book.authorUid, book.authorName) : (book.authorName || 'مؤلف');
+  const hasAuthorAccount = Boolean(book.authorUid && AppState.allUsers[book.authorUid]);
+  const authorUserObj = hasAuthorAccount ? AppState.allUsers[book.authorUid] : null;
+  const authorAvatar = hasAuthorAccount ? getRealPhoto(book.authorUid, '') : DEFAULT_PIC;
+  const authorBioText = (authorUserObj && authorUserObj.bio) ? authorUserObj.bio : (book.authorBio || '');
+
+  // بيانات دار النشر والترابط الشبكي
+  const isMainDarPub = !book.publisherUid || book.publisherUid === 'DAR_MAIN' || sqIsAdminUid(book.publisherUid);
+  const pubDisplay = isMainDarPub ? (book.publisherName || APP_NAME) : getRealName(book.publisherUid, book.publisherName || APP_NAME);
+  const pubAvatar = isMainDarPub ? APP_LOGO_URL : getRealPhoto(book.publisherUid, APP_LOGO_URL);
+  const hasPubProfile = Boolean(!isMainDarPub && book.publisherUid && AppState.allUsers[book.publisherUid]);
+
+  // الأسعار بالعملات الثلاث (SAR / USD / EGP)
+  const pInfo = window.sqFormatBookPrice(book, AppState.displayCurrency);
+  const pSAR = window.sqFormatBookPrice(book, 'SAR');
+  const pUSD = window.sqFormatBookPrice(book, 'USD');
+  const pEGP = window.sqFormatBookPrice(book, 'EGP');
+
+  const hasFileUrl = Boolean(book.downloadUrl && book.downloadUrl.trim() !== '');
+  const canOrderPaper = (book.allowPaperOrder !== false) && (pInfo.current > 0) && (book.availability !== 'out');
+  const canReadOnline = hasFileUrl && (book.allowOnlineRead !== false);
+  const canDirectDownload = hasFileUrl && (book.allowDirectDownload !== false);
+  const savedPageNum = window.sqGetSavedReaderPage(book.id);
+
+  window.sqUpdateDynamicSEO(
+    `كتاب ${book.title} — ${authorDisplay}`,
+    book.desc || `تصفح واطلب كتاب ${book.title} للمؤلف ${authorDisplay} عبر متجر ${APP_NAME}`,
+    book.cover || APP_LOGO_URL,
+    false,
+    {
+      "@context": "https://schema.org",
+      "@type": "Book",
+      "name": decodeEntities(book.title),
+      "author": { "@type": "Person", "name": decodeEntities(authorDisplay) },
+      "publisher": { "@type": "Organization", "name": decodeEntities(pubDisplay) },
+      "description": decodeEntities(book.desc || ''),
+      "image": book.cover || APP_LOGO_URL,
+      "offers": { "@type": "Offer", "price": pSAR.current, "priceCurrency": "SAR", "availability": "https://schema.org/InStock" },
+      "aggregateRating": { "@type": "AggregateRating", "ratingValue": st.avgRating, "reviewCount": Math.max(1, st.ratingsCount) }
+    }
+  );
+
+  const isMyPublisherBook = AppState.currentUser && book.publisherUid === AppState.currentUser.uid;
+  const canEditBook = AppState.isAdmin || (AppState.userData.permissions || []).includes('manage_books') || isMyPublisherBook;
+  const canPromoteBook = AppState.isAdmin || window.sqHasPermission('manage_ads') || canEditBook;
+
+  const isSavedInMyLib = AppState.currentUser && (AppState.userData.savedBooks || []).includes(book.id);
+  const myShelfState = (AppState.userData.readingShelf && AppState.userData.readingShelf[book.id]) || '';
+
+  const relatedPosts = AppState.posts.filter(p => p.linkedBookId === book.id || (book.title && (p.book || '').trim() === book.title.trim()));
+  const reviews = Array.isArray(book.reviews) ? [...book.reviews].sort((a, b) => (b.time || 0) - (a.time || 0)) : [];
+  const similarBooks = window.SafaqatAI.getSimilarBooks(book, 6);
+
+  const availMap = {
+    available: { text: 'متوفر ورقياً ورقمياً', color: 'var(--success)', icon: 'fa-circle-check' },
+    digital:   { text: 'إصدار رقمي', color: 'var(--author)', icon: 'fa-tablet-screen-button' },
+    out:       { text: 'نفدت النسخ الورقية', color: 'var(--danger)', icon: 'fa-circle-xmark' },
+    soon:      { text: 'قريباً في المتجر', color: 'var(--warning)', icon: 'fa-clock' }
+  };
+  const availObj = availMap[book.availability || 'available'] || availMap.available;
+
+  let staffControlBar = '';
+  if (canEditBook || canPromoteBook) {
+    staffControlBar = `
+      <div class="sq-hub-card" style="background:var(--accent-soft); border:1.5px dashed var(--accent); padding:10px 14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <span style="font-size:12px; font-weight:900; color:var(--text-main);"><i class="fa-solid fa-sliders" style="color:var(--accent);"></i> تحكم الإدارة والناشر:</span>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          ${canPromoteBook ? `<button class="sq-btn sq-btn-gold" style="padding:5px 12px!important; font-size:11px!important;" onclick="window.sqPromoteBookOneClick('${book.id}')"><i class="fa-solid fa-calendar-star"></i> ترويج في الأحداث</button>` : ''}
+          ${canEditBook ? `<button class="sq-btn" style="padding:5px 12px!important; font-size:11px!important;" onclick="window.sqOpenBookStudio('${book.id}')"><i class="fa-solid fa-pen-to-square"></i> تعديل الكتاب</button>` : ''}
+          ${canEditBook ? `<button class="sq-btn sq-btn-outline" style="padding:5px 10px!important; font-size:11px!important; color:var(--danger)!important; border-color:var(--danger)!important;" onclick="window.sqDeleteBook('${book.id}')"><i class="fa-solid fa-trash"></i></button>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  const reviewsHtml = reviews.length ? reviews.map((rev, rIdx) => {
+    const rName = escapeHtml(getRealName(rev.uid, rev.name));
+    const rPhoto = getRealPhoto(rev.uid, rev.photo);
+    const canDelRev = (AppState.currentUser && rev.uid === AppState.currentUser.uid) || window.sqHasPermission('manage_mod');
+    const starsHtml = Array.from({ length: 5 }, (_, i) => `<i class="fa-solid fa-star" style="color:${i < (rev.stars || 5) ? '#fbbf24' : '#cbd5e1'}; font-size:11px;"></i>`).join('');
+    return `
+      <div style="background:var(--bg); border:1px solid var(--border); border-radius:14px; padding:11px; margin-bottom:8px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+          <div style="display:flex; align-items:center; gap:8px; cursor:pointer;" onclick="window.sqViewProfile('${rev.uid}')">
+            <img src="${rPhoto}" style="width:30px; height:30px; border-radius:50%; object-fit:cover;">
+            <div>
+              <div style="font-size:12.5px; font-weight:800;">${rName} ${window.getUserBadges(rev.uid, false, false)}</div>
+              <div>${starsHtml} <span style="font-size:10px; color:var(--text-muted); margin-right:4px;">${sqFormatRelativeTime(rev.time)}</span></div>
+            </div>
+          </div>
+          ${canDelRev ? `<button style="background:none; border:none; color:var(--danger); cursor:pointer; font-size:12px;" onclick="window.sqDeleteBookReview('${book.id}', ${rIdx})"><i class="fa-solid fa-trash"></i></button>` : ''}
+        </div>
+        <p style="font-size:13px; line-height:1.7; color:var(--text-main); white-space:pre-wrap;">${escapeHtml(rev.text || '')}</p>
+      </div>
+    `;
+  }).join('') : `<p style="text-align:center; padding:14px; color:var(--text-muted); font-size:12.5px;">إيه رأيك في الكتاب؟ كن أول من يشاركنا تقييمه وانطباعه!</p>`;
+
+  const similarBooksHtml = similarBooks.length ? `
+    <div class="sq-shelf-block">
+      <div class="sq-section-head">
+        <div class="sq-section-title"><i class="fa-solid fa-compass" style="color:var(--accent);"></i> إصدارات مشابهة على نفس الذوق</div>
+        <span style="font-size:11px; color:var(--text-muted); font-weight:700;">تصفح أفقياً</span>
+      </div>
+      <div class="sq-books-horizontal-rail">
+        ${similarBooks.map(b => window.sqBuildBookCardHTML(b)).join('')}
+      </div>
+    </div>
+  ` : '';
+
+  container.innerHTML = `
+    <div class="sq-inpage-topbar">
+      <div class="sq-inpage-title"><i class="fa-solid fa-book-open" style="color:var(--accent);"></i> تفاصيل الإصدار</div>
+      <div style="display:flex; gap:6px;">
+        <button class="sq-back-pill" onclick="window.sqCopyDirectBookLink('${book.id}')"><i class="fa-solid fa-share-nodes" style="color:var(--accent);"></i> مشاركة</button>
+        <button class="sq-back-pill" onclick="window.sqSwitchMainView('store', true)"><i class="fa-solid fa-arrow-left"></i> المتجر</button>
+      </div>
+    </div>
+
+    ${staffControlBar}
+
+    <!-- البطاقة الرئيسية للكتاب بهوية الموقع المتجانسة (الغلاف في الزاوية + البيانات المقابلة) -->
+    <div class="sq-book-clean-card">
+      <div class="sq-book-top-split">
+        <!-- غلاف الكتاب في الزاوية -->
+        <img src="${escapeHtml(book.cover || APP_LOGO_URL)}" class="sq-book-corner-cover" onclick="window.sqOpenLightbox('${escapeHtml(book.cover || APP_LOGO_URL)}')" alt="${escapeHtml(book.title)}">
+
+        <!-- البيانات المقابلة للغلاف -->
+        <div class="sq-book-side-meta">
+          <div style="display:flex; flex-wrap:wrap; gap:4px; align-items:center;">
+            ${catsBadgesHtml}
+            <span class="sq-status-pill" style="margin:0; color:${availObj.color};"><i class="fa-solid ${availObj.icon}"></i> ${availObj.text}</span>
+          </div>
+
+          <h1 style="font-size:18.5px; font-weight:900; color:var(--text-main); line-height:1.35;">${escapeHtml(book.title)}</h1>
+
+          <!-- المؤلف ودار النشر بحجم صغير وأنيق في سطر واحد جنباً إلى جنب -->
+          <div class="sq-book-compact-entities">
+            <div class="sq-entity-mini-chip" ${hasAuthorAccount ? `onclick="window.sqViewProfile('${book.authorUid}', 'books')"` : ''}>
+              <img src="${escapeHtml(authorAvatar)}" alt="${escapeHtml(authorDisplay)}">
+              <span>${escapeHtml(authorDisplay)}</span>
+              ${hasAuthorAccount ? `<span class="sq-vbadge author" title="كاتب معتمد"><i class="fa-solid fa-check"></i></span>` : ''}
+            </div>
+
+            <div class="sq-entity-mini-chip" ${hasPubProfile ? `onclick="window.sqViewProfile('${book.publisherUid}', 'books')"` : `onclick="window.sqSwitchMainView('publishers_directory')"`}>
+              <img src="${escapeHtml(pubAvatar)}" style="border-radius:5px;" alt="${escapeHtml(pubDisplay)}">
+              <span>${escapeHtml(pubDisplay)}</span>
+              ${isMainDarPub
+                ? `<span class="sq-vbadge admin" title="الدار الرسمية"><i class="fa-solid fa-check"></i></span>`
+                : `<span class="sq-vbadge publisher" title="دار نشر معتمدة"><i class="fa-solid fa-check"></i></span>`
+              }
+            </div>
+          </div>
+
+          <!-- شريط الإحصائيات المختصر -->
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:12px; color:var(--text-muted); font-weight:800; padding-top:2px;">
+            <span style="color:#d97706;"><i class="fa-solid fa-star" style="color:#fbbf24;"></i> ${st.avgRating} (${st.ratingsCount})</span>
+            <span>•</span>
+            <span><i class="fa-solid fa-book-open-reader" style="color:var(--accent);"></i> ${st.readersCount} قارئ</span>
+            <span>•</span>
+            <span><i class="fa-regular fa-eye"></i> ${book.views || 1} زيارة</span>
+          </div>
+
+          <!-- صندوق التسعير الذكي بالعملات الثلاث (SAR / USD / EGP) -->
+          <div class="sq-book-price-box">
+            <div>
+              ${pInfo.current > 0 ? `
+                <div style="display:flex; align-items:baseline; gap:6px;">
+                  <strong style="font-size:18px; font-weight:900; color:var(--text-main);">${pInfo.current} ${escapeHtml(pInfo.symbol)}</strong>
+                  ${pInfo.old > pInfo.current ? `<span style="font-size:12px; color:var(--danger); text-decoration:line-through; font-weight:700;">${pInfo.old} ${escapeHtml(pInfo.symbol)}</span>` : ''}
+                </div>
+                <div style="font-size:10.5px; color:var(--text-muted); font-weight:700;">
+                  يعادل تقريباً: ${pSAR.current} ر.س | ${pUSD.current} $ | ${pEGP.current} ج.م
+                </div>
+              ` : `
+                <strong style="font-size:15px; font-weight:900; color:var(--success);"><i class="fa-solid fa-gift"></i> متاح مجاناً للقراء</strong>
+              `}
+            </div>
+            <select class="sq-compact-select" style="font-size:11px; padding:4px 8px;" onchange="window.sqSetDisplayCurrency(this.value)">
+              <option value="SAR" ${AppState.displayCurrency === 'SAR' ? 'selected' : ''}>ر.س (SAR)</option>
+              <option value="USD" ${AppState.displayCurrency === 'USD' ? 'selected' : ''}>$ (USD)</option>
+              <option value="EGP" ${AppState.displayCurrency === 'EGP' ? 'selected' : ''}>ج.م (EGP)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- أزرار الإجراءات المتكاملة (طلب ورقي + قراءة آمنة داخل الموقع + تحميل في الخلفية) -->
+      <div style="margin-top:14px; padding-top:12px; border-top:1px dashed var(--border); display:flex; flex-direction:column; gap:8px;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          ${canOrderPaper ? `
+            <button class="sq-btn sq-btn-gold" style="flex:2; min-width:170px; padding:11px 14px!important; font-size:13px!important;" onclick="window.sqAddToCart('${book.id}', 1, true)">
+              <i class="fa-solid fa-bag-shopping"></i> اطلب النسخة الورقية الآن
+            </button>
+            <button class="sq-btn sq-btn-outline" style="flex:1; min-width:95px;" onclick="window.sqAddToCart('${book.id}', 1, false)">
+              <i class="fa-solid fa-cart-plus" style="color:var(--accent);"></i> للسلة
+            </button>
+          ` : ''}
+
+          ${canReadOnline ? `
+            <button class="sq-btn" style="flex:2; min-width:170px; background:linear-gradient(135deg,#0284c7 0%,#0369a1 100%)!important; color:#fff!important; padding:11px 14px!important; font-size:13px!important;" onclick="window.sqOpenBookReader('${book.id}')">
+              <i class="fa-solid fa-book-open-reader"></i> قراءة داخل الموقع ${savedPageNum > 1 ? `(أكمل ص ${savedPageNum})` : '(قراءة آمنة)'}
+            </button>
+          ` : ''}
+
+          ${canDirectDownload ? `
+            <button class="sq-btn" style="flex:1.5; min-width:150px; background:linear-gradient(135deg,#10b981 0%,#059669 100%)!important; color:#fff!important; padding:11px 14px!important; font-size:13px!important;" onclick="window.sqRequestBookDownload('${book.id}')">
+              <i class="fa-solid fa-cloud-arrow-down"></i> تحميل الكتاب (${st.downloadsCount || 0})
+            </button>
+          ` : ''}
+        </div>
+
+        ${AppState.showDownloadConfirmForBook ? `
+          <div class="sq-dl-confirm-box">
+            <div style="font-size:13px; font-weight:900; margin-bottom:8px;">
+              <i class="fa-solid fa-circle-question" style="color:var(--accent);"></i> هل أنت متأكد من تحميل كتاب "${escapeHtml(book.title)}"؟
+            </div>
+            <div style="display:flex; gap:8px; justify-content:center;">
+              <button class="sq-btn sq-btn-gold" style="padding:6px 16px!important; font-size:12px!important;" onclick="window.sqExecuteBookDownload('${book.id}')">
+                <i class="fa-solid fa-check"></i> أنا متأكد (ابدأ التحميل في الخلفية)
+              </button>
+              <button class="sq-btn sq-btn-outline" style="padding:6px 12px!important; font-size:12px!important;" onclick="window.sqRequestBookDownload('${book.id}')">
+                إلغاء
+              </button>
+            </div>
+          </div>
+        ` : ''}
+
+        <!-- شريط رف القراءة وحفظ الكتاب في مكتبتي -->
+        <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:space-between; align-items:center; padding-top:4px;">
+          <div style="display:flex; gap:5px; flex-wrap:wrap;">
+            <button class="sq-tab-pill ${isSavedInMyLib ? 'active' : ''}" onclick="window.sqToggleSaveBookToLibrary('${book.id}')">
+              <i class="fa-solid ${isSavedInMyLib ? 'fa-check' : 'fa-bookmark'}" style="color:var(--accent);"></i> ${isSavedInMyLib ? 'محفوظ في مكتبتي' : 'حفظ بمكتبتي'}
+            </button>
+            <button class="sq-tab-pill ${myShelfState === 'reading' ? 'active' : ''}" onclick="window.sqSetReadingShelfStatus('${book.id}', 'reading')">
+              <i class="fa-solid fa-book-open-reader" style="color:var(--author);"></i> أقرؤه حالياً
+            </button>
+            <button class="sq-tab-pill ${myShelfState === 'read' ? 'active' : ''}" onclick="window.sqSetReadingShelfStatus('${book.id}', 'read')">
+              <i class="fa-solid fa-check-double" style="color:var(--success);"></i> قرأته
+            </button>
+          </div>
+          ${book.externalUrl ? `<a href="${escapeHtml(book.externalUrl)}" target="_blank" class="sq-mini-action-btn" style="text-decoration:none;"><i class="fa-solid fa-arrow-up-right-from-square"></i> رابط خارجي</a>` : ''}
+        </div>
+      </div>
+    </div>
+
+    <!-- القوائم المنسدلة الأنيقة (Accordions): نبذة الكتاب + نبذة الكاتب + البطاقة الفهرسية -->
+    <details class="sq-accordion-box" open>
+      <summary><span><i class="fa-solid fa-align-right" style="color:var(--accent); margin-left:6px;"></i> نبذة عن الكتاب وملخص العمل</span></summary>
+      <div style="margin-top:10px; padding-top:8px; border-top:1px dashed var(--border);">
+        <p class="sq-book-desc-text" style="font-size:14px; line-height:1.85; color:var(--text-main); white-space:pre-wrap;">${escapeHtml(book.desc || `إصدار أدبي متوفر عبر ${pubDisplay}.`)}</p>
+      </div>
+    </details>
+
+    ${(authorBioText || hasAuthorAccount) ? `
+      <details class="sq-accordion-box">
+        <summary><span><i class="fa-solid fa-feather-pointed" style="color:var(--author); margin-left:6px;"></i> نبذة عن الكاتب: ${escapeHtml(authorDisplay)}</span></summary>
+        <div style="margin-top:10px; padding-top:8px; border-top:1px dashed var(--border); display:flex; flex-direction:column; gap:8px;">
+          <p style="font-size:13.5px; line-height:1.8; color:var(--text-muted); white-space:pre-wrap;">${escapeHtml(authorBioText || `كاتب ومؤلف في منصة ${APP_NAME}.`)}</p>
+          ${hasAuthorAccount ? `<div><button class="sq-btn sq-btn-outline" style="padding:5px 12px!important; font-size:11.5px!important;" onclick="window.sqViewProfile('${book.authorUid}', 'books')"><i class="fa-regular fa-user"></i> زيارة الصفحة الكاملة للكاتب ومؤلفاته</button></div>` : ''}
+        </div>
+      </details>
+    ` : ''}
+
+    <details class="sq-accordion-box">
+      <summary><span><i class="fa-solid fa-circle-info" style="color:var(--accent); margin-left:6px;"></i> البطاقة الفهرسية وتفاصيل الطبعة</span></summary>
+      <div style="margin-top:10px; padding-top:8px; border-top:1px dashed var(--border); display:flex; flex-wrap:wrap; gap:8px;">
+        <span class="sq-status-pill"><i class="fa-solid fa-building-columns" style="color:var(--accent);"></i> الناشر: <strong>${escapeHtml(pubDisplay)}</strong></span>
+        ${book.pages ? `<span class="sq-status-pill"><i class="fa-regular fa-file-lines" style="color:var(--accent);"></i> عدد الصفحات: <strong>${escapeHtml(book.pages)}</strong></span>` : ''}
+        ${book.publishYear ? `<span class="sq-status-pill"><i class="fa-regular fa-calendar" style="color:var(--accent);"></i> سنة النشر: <strong>${escapeHtml(book.publishYear)}</strong></span>` : ''}
+        ${book.isbn ? `<span class="sq-status-pill"><i class="fa-solid fa-barcode" style="color:var(--accent);"></i> ردمك ISBN: <strong>${escapeHtml(book.isbn)}</strong></span>` : ''}
+      </div>
+    </details>
+
+    <!-- قسم التقييمات والمراجعات بالنجوم -->
+    <div class="sq-hub-card">
+      <h3 style="font-size:15.5px; font-weight:900; margin-bottom:10px;"><i class="fa-solid fa-star" style="color:#fbbf24;"></i> آراء القراء وتقييماتهم (${reviews.length})</h3>
+      <div style="background:var(--bg); border:1px solid var(--border); border-radius:15px; padding:12px; margin-bottom:12px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+          <span style="font-size:12px; font-weight:800;">قيّم الكتاب بالنجوم:</span>
+          <div class="sq-stars-interactive" id="sq-book-star-picker" data-stars="5">
+            <i class="fa-solid fa-star active" onclick="window.sqSelectBookStar(1)"></i>
+            <i class="fa-solid fa-star active" onclick="window.sqSelectBookStar(2)"></i>
+            <i class="fa-solid fa-star active" onclick="window.sqSelectBookStar(3)"></i>
+            <i class="fa-solid fa-star active" onclick="window.sqSelectBookStar(4)"></i>
+            <i class="fa-solid fa-star active" onclick="window.sqSelectBookStar(5)"></i>
+          </div>
+        </div>
+        <textarea id="sq-book-review-in" class="sq-input" style="min-height:65px; resize:none; background:var(--card)!important;" placeholder="شاركنا رأيك في الكتاب..."></textarea>
+        <button class="sq-btn" style="width:100%;" onclick="window.sqSubmitBookReview('${book.id}')"><i class="fa-solid fa-check"></i> إضافة التقييم والمراجعة</button>
+      </div>
+      <div>${reviewsHtml}</div>
+    </div>
+
+    <!-- قسم المنشورات والاقتباسات المرتبطة بالكتاب في المجتمع -->
+    <div class="sq-hub-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <h3 style="font-size:15.5px; font-weight:900;"><i class="fa-solid fa-quote-right" style="color:var(--accent);"></i> اقتباسات ومراجعات القراء في المجتمع (${relatedPosts.length})</h3>
+        <button class="sq-btn sq-btn-gold" style="padding:5px 12px!important; font-size:11.5px!important;" onclick="window.sqStartPostForBook('${book.id}')"><i class="fa-solid fa-feather-pointed"></i> انشر اقتباساً</button>
+      </div>
+      <div>
+        ${relatedPosts.length ? relatedPosts.map(p => window.sqBuildSinglePostHTML(p, false)).join('') : `<p style="text-align:center; padding:18px; color:var(--text-muted); font-size:12.5px;">لم ينشر القراء اقتباسات مرتبطة بهذا الكتاب بعد. كن أول من يقتبس منه!</p>`}
+      </div>
+    </div>
+
+    ${similarBooksHtml}
+  `;
+};
+
+window.sqCopyDirectBookLink = function(bookId) {
+  const link = `${CURRENT_DOMAIN_ORIGIN}${window.location.pathname}?book=${bookId}`;
+  if (navigator.clipboard) navigator.clipboard.writeText(link).then(() => sqShowToast("تم نسخ رابط الكتاب المباشر!", "success"));
+};
+
+window.sqSelectBookStar = function(num) {
+  const picker = document.getElementById('sq-book-star-picker');
+  if (!picker) return;
+  picker.setAttribute('data-stars', String(num));
+  picker.querySelectorAll('i').forEach((st, idx) => st.classList.toggle('active', idx < num));
+};
+
+window.sqSubmitBookReview = function(bookId) {
+  if (!AppState.currentUser) { sqShowToast("سجل دخولك الأول عشان تقيّم الكتاب", "warning"); return window.sqLogin(); }
+  const book = AppState.booksList.find(b => b.id === bookId); if (!book) return;
+  const picker = document.getElementById('sq-book-star-picker');
+  const stars = Number(picker?.getAttribute('data-stars') || 5);
+  const text = (document.getElementById('sq-book-review-in')?.value || '').trim();
+  if (!text) return sqShowToast("اكتب رأيك المختصر مع التقييم", "warning");
+
+  window.SafaqatAI.trackSignal('book', book, 4);
+  const reviews = Array.isArray(book.reviews) ? [...book.reviews] : [];
+  const existingIdx = reviews.findIndex(r => r.uid === AppState.currentUser.uid);
+  const revObj = {
+    uid: AppState.currentUser.uid,
+    name: getRealName(AppState.currentUser.uid, AppState.currentUser.displayName),
+    photo: getRealPhoto(AppState.currentUser.uid, AppState.currentUser.photoURL),
+    stars: stars,
+    text: text,
+    time: Date.now()
+  };
+  if (existingIdx >= 0) reviews[existingIdx] = revObj;
+  else reviews.push(revObj);
+
+  db.collection("safaqat_books").doc(bookId).update({ reviews: reviews }).then(() => {
+    sqShowToast("تسلم إيدك! تم حفظ تقييمك للكتاب بنجاح", "success");
+    if (book.authorUid && book.authorUid !== AppState.currentUser.uid) {
+      window.sqSendNotif(book.authorUid, null, `أضاف ${revObj.name} تقييماً (${stars} نجوم) على كتابك "${book.title}".`);
+    }
+  });
+};
+
+window.sqDeleteBookReview = function(bookId, rIdx) {
+  if (!confirm("حذف هذه المراجعة؟")) return;
+  const book = AppState.booksList.find(b => b.id === bookId); if (!book) return;
+  const reviews = [...(book.reviews || [])];
+  reviews.splice(rIdx, 1);
+  db.collection("safaqat_books").doc(bookId).update({ reviews: reviews }).then(() => sqShowToast("تم حذف المراجعة", "success"));
+};
+
+window.sqSetReadingShelfStatus = function(bookId, status) {
+  if (!AppState.currentUser) { sqShowToast("سجل دخولك الأول يا بطل", "warning"); return window.sqLogin(); }
+  const book = AppState.booksList.find(b => b.id === bookId); if (!book) return;
+  window.SafaqatAI.trackSignal('book', book, 4);
+  const shelf = { ...(AppState.userData.readingShelf || {}) };
+  let savedList = [...(AppState.userData.savedBooks || [])];
+
+  if (shelf[bookId] === status) {
+    delete shelf[bookId];
+  } else {
+    shelf[bookId] = status;
+    if (!savedList.includes(bookId)) savedList.push(bookId);
+    db.collection("safaqat_books").doc(bookId).update({ readsCount: firebase.firestore.FieldValue.increment(1) }).catch(() => {});
+  }
+  const updates = { readingShelf: shelf, savedBooks: savedList };
+  if (status === 'reading') updates.currentlyReadingBookId = (shelf[bookId] === 'reading') ? bookId : '';
+  db.collection("safaqat_users").doc(AppState.currentUser.uid).update(updates).then(() => {
+    AppState.userData.readingShelf = shelf;
+    AppState.userData.savedBooks = savedList;
+    if (updates.currentlyReadingBookId !== undefined) AppState.userData.currentlyReadingBookId = updates.currentlyReadingBookId;
+    window.sqRenderBookDetailView();
+    sqShowToast("تم تحديث قائمة قراءتك ومكتبتك!", "success");
+  });
+};
+
+window.sqPromoteBookOneClick = function(bookId) {
+  if (!window.sqHasPermission('manage_ads') && !window.sqHasPermission('manage_books')) return;
+  const book = AppState.booksList.find(b => b.id === bookId); if (!book) return;
+  const authorDisplay = book.authorUid ? getRealName(book.authorUid, book.authorName) : (book.authorName || '');
+
+  db.collection("safaqat_ads").add({
+    title: `إصدار مميز: ${book.title}${authorDisplay ? ' — ' + authorDisplay : ''}`,
+    eventType: book.isOffer ? 'offer' : 'event',
+    description: (book.desc || 'تصفح الكتاب واطلب نسختك أو اقرأه الآن عبر المتجر').substring(0, 180),
+    targetUrl: '',
+    bookId: book.id,
+    ctaText: 'تصفح الكتاب الآن',
+    placement: 'both',
+    imageUrl: book.cover || APP_LOGO_URL,
+    active: true,
+    clicks: 0,
+    time: Date.now()
+  }).then(() => {
+    db.collection("safaqat_books").doc(book.id).update({ isFeatured: true }).catch(() => {});
+    sqShowToast("تمت إضافة الكتاب إلى شريط الأحداث والعروض العلوي فوراً!", "success");
+  });
+};
+
+// =========================================================
+// 🛠️ استوديو رفع وتعديل الكتب الذكي (كاشف التشابه + تعدد الفئات + 3 عملات + خيارات الإتاحة)
+// =========================================================
+window.sqOpenBookStudio = function(bookId = null) {
+  if (!window.sqHasPermission('manage_books')) {
+    return sqShowToast("رفع وتعديل الكتب متاح فقط للإدارة ودور النشر والموظفين المفوضين", "danger");
+  }
+  AppState.editingBookId = bookId;
+  const book = bookId ? AppState.booksList.find(b => b.id === bookId) : null;
+  AppState.pendingBookCover = book ? (book.cover || '') : '';
+  AppState.selectedAuthorUidForBook = book ? (book.authorUid || '') : '';
+  AppState.selectedBookCategories = (book && Array.isArray(book.categories) && book.categories.length)
+    ? [...book.categories]
+    : (book && book.category ? [book.category] : ['novels']);
+
+  if (book && book.publisherUid) {
+    AppState.selectedPublisherUidForBook = book.publisherUid;
+  } else if (AppState.userData && AppState.userData.isPublisher && !AppState.isAdmin) {
+    AppState.selectedPublisherUidForBook = AppState.currentUser.uid;
+  } else {
+    AppState.selectedPublisherUidForBook = 'DAR_MAIN';
+  }
+
+  document.getElementById('sq-book-studio-title').innerHTML = book
+    ? `<i class="fa-solid fa-pen-to-square" style="color:var(--accent);"></i> تعديل كتاب: ${escapeHtml(book.title)}`
+    : `<i class="fa-solid fa-book-medical" style="color:var(--accent);"></i> رفع كتاب جديد (مرونة شاملة)`;
+
+  const mergedCats = window.sqGetMergedBookCategories();
+  const multiCatsChipsHtml = Object.keys(mergedCats).map(k => {
+    const isSel = AppState.selectedBookCategories.includes(k);
+    return `<button type="button" id="bkcat-chip-${k}" class="sq-tab-pill ${isSel ? 'active' : ''}" onclick="window.sqToggleBookCategorySelection('${k}')"><i class="fa-solid ${mergedCats[k].icon || 'fa-tag'}"></i> ${escapeHtml(mergedCats[k].label)}</button>`;
+  }).join('');
+
+  let pubOptionsHtml = `<option value="DAR_MAIN" ${AppState.selectedPublisherUidForBook === 'DAR_MAIN' ? 'selected' : ''}>${escapeHtml(APP_NAME)} (الدار الرئيسية الرسمية)</option>`;
+  Object.keys(AppState.allUsers).forEach(uid => {
+    const u = AppState.allUsers[uid];
+    if (u && u.isPublisher) {
+      const pName = getRealName(uid, u.displayName);
+      pubOptionsHtml += `<option value="${uid}" ${AppState.selectedPublisherUidForBook === uid ? 'selected' : ''}>دار نشر: ${escapeHtml(pName)}</option>`;
+    }
+  });
+
+  const linkedUserObj = AppState.selectedAuthorUidForBook ? AppState.allUsers[AppState.selectedAuthorUidForBook] : null;
+  const linkedAuthorLabel = linkedUserObj
+    ? `${getRealName(AppState.selectedAuthorUidForBook, linkedUserObj.displayName)} (SK-${AppState.selectedAuthorUidForBook.substring(0, 6).toUpperCase()})`
+    : 'غير مربوط بحساب عضو بعد (سيظهر بالاسم النصي فقط)';
+
+  const formBox = document.getElementById('sq-book-studio-form');
+  formBox.innerHTML = `
+    <div style="background:var(--accent-soft); border:1px solid var(--accent-border); padding:9px 12px; border-radius:12px; font-size:12px; font-weight:800; margin-bottom:14px; color:var(--text-main);">
+      <i class="fa-solid fa-circle-check" style="color:var(--accent);"></i> <strong>الرفع المرن:</strong> الحقل الإلزامي الوحيد هو <strong>(عنوان الكتاب)</strong>، ويمكنك اختيار عدة تصنيفات وتسعيره بالعملات الثلاث أو إتاحته للقراءة والتحميل!
+    </div>
+
+    <!-- تنبيه التشابه الذكي للكتب والمؤلفين -->
+    <div id="bk-similarity-alert" style="display:none; background:rgba(245,158,11,0.14); border:1.5px solid var(--warning); color:var(--text-main); padding:10px 12px; border-radius:13px; font-size:12px; font-weight:800; margin-bottom:12px;"></div>
+
+    <div class="sq-upload-zone" style="margin-bottom:14px;">
+      <label for="sq-studio-cover-in" style="cursor:pointer; display:block;">
+        <img id="sq-studio-cover-prev" src="${escapeHtml(AppState.pendingBookCover || APP_LOGO_URL)}" style="width:92px; height:134px; object-fit:cover; border-radius:10px; border:2px solid var(--accent); margin:0 auto 8px auto; display:block;">
+        <div id="sq-book-cover-status" style="font-size:12px; font-weight:800; color:var(--text-main);"><i class="fa-solid fa-camera" style="color:var(--accent);"></i> اضغط لرفع صورة غلاف الكتاب (اختياري)</div>
+      </label>
+      <input type="file" id="sq-studio-cover-in" accept="image/*" style="display:none;" onchange="window.sqHandleBookCoverUpload(this)">
+    </div>
+
+    <label class="sq-field-label"><i class="fa-solid fa-book"></i> عنوان الكتاب أو الرواية (الحقل الوحيد الإلزامي *):</label>
+    <input type="text" id="bk-in-title" class="sq-input" value="${escapeHtml(book ? book.title : '')}" placeholder="اكتب عنوان الكتاب هنا..." oninput="window.sqCheckBookDuplicateAndAuthorMatch()">
+
+    <!-- اختيار عدة تصنيفات وفئات للكتاب نفسه -->
+    <div style="background:var(--bg); border:1px solid var(--border); border-radius:15px; padding:12px; margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <label class="sq-field-label" style="margin:0;"><i class="fa-solid fa-layer-group"></i> تصنيفات وفئات الكتاب (يمكنك تحديد أكثر من فئة):</label>
+        <button type="button" class="sq-mini-action-btn" onclick="window.sqAddNewBookCategoryPrompt()"><i class="fa-solid fa-folder-plus"></i> + فئة جديدة</button>
+      </div>
+      <div id="bk-multi-cats-box" style="display:flex; flex-wrap:wrap; gap:6px;">${multiCatsChipsHtml}</div>
+    </div>
+
+    <!-- الترابط الشبكي: دار النشر والمؤلف -->
+    <div style="background:var(--bg); border:1px solid var(--border); border-radius:15px; padding:12px; margin-bottom:12px;">
+      <h4 style="font-size:13px; font-weight:900; margin-bottom:8px; color:var(--text-main);"><i class="fa-solid fa-diagram-project" style="color:var(--accent);"></i> الترابط الشبكي (دار النشر والمؤلف)</h4>
+
+      <label class="sq-field-label"><i class="fa-solid fa-building-columns"></i> دار النشر التابع لها هذا الكتاب:</label>
+      <select id="bk-in-pub-uid" class="sq-select" onchange="AppState.selectedPublisherUidForBook = this.value">${pubOptionsHtml}</select>
+
+      <label class="sq-field-label"><i class="fa-solid fa-feather-pointed"></i> اسم المؤلف الظاهر على الكتاب (اختياري):</label>
+      <input type="text" id="bk-in-author-name" class="sq-input" value="${escapeHtml(book ? (book.authorName || '') : '')}" placeholder="اكتب اسم الكاتب..." oninput="window.sqCheckBookDuplicateAndAuthorMatch()">
+
+      <label class="sq-field-label"><i class="fa-solid fa-user-check"></i> ربط بحساب الكاتب في المنصة (ليظهر الكتاب في ملفه وضمن كُتّاب الدار):</label>
+      <div id="bk-linked-author-pill" style="background:var(--card); border:1px solid var(--accent-border); padding:7px 11px; border-radius:11px; font-size:11.5px; font-weight:800; display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <span id="bk-linked-author-text">${escapeHtml(linkedAuthorLabel)}</span>
+        <button type="button" style="background:none; border:none; color:var(--danger); cursor:pointer; font-weight:bold; font-size:11px;" onclick="window.sqSelectBookAuthorUid('', '')">إلغاء الربط</button>
+      </div>
+      <input type="text" id="bk-author-search-in" class="sq-input" style="margin-bottom:6px!important;" placeholder="ابحث عن حساب الكاتب بالاسم أو معرف SKID لربطه..." oninput="window.sqFilterAuthorAccountsForBook(this.value)">
+      <div id="bk-author-search-results" style="max-height:140px; overflow-y:auto; display:flex; flex-direction:column; gap:5px;"></div>
+    </div>
+
+    <!-- نظام التسعير العالمي بالعملات الثلاث (SAR / USD / EGP) والخصومات -->
+    <div style="background:var(--bg); border:1px solid var(--border); border-radius:15px; padding:12px; margin-bottom:12px;">
+      <h4 style="font-size:13px; font-weight:900; margin-bottom:6px; color:var(--text-main);"><i class="fa-solid fa-coins" style="color:var(--accent);"></i> التسعير بالعملات الثلاث والخصومات (اختياري — اتركه فارغاً للمجاني)</h4>
+      <p style="font-size:11px; color:var(--text-muted); margin-bottom:8px;">يمكنك كتابة السعر بالريال السعودي فقط وسيقوم النظام بحساب الدولار والجنيه تلقائياً، أو تخصيص كل عملة بنفسك:</p>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+        <div>
+          <label class="sq-field-label">السعر بالريال السعودي (ر.س):</label>
+          <input type="number" step="0.01" id="bk-in-price-sar" class="sq-input" value="${book && (book.priceSAR !== undefined ? book.priceSAR : book.price) ? (book.priceSAR !== undefined ? book.priceSAR : book.price) : ''}" placeholder="0 = مجاني">
+        </div>
+        <div>
+          <label class="sq-field-label">قبل الخصم بالريال (اختياري):</label>
+          <input type="number" step="0.01" id="bk-in-old-sar" class="sq-input" value="${book && (book.oldPriceSAR || book.oldPrice) ? (book.oldPriceSAR || book.oldPrice) : ''}" placeholder="سعر سابق">
+        </div>
+        <div>
+          <label class="sq-field-label">السعر بالدولار ($) — اختياري:</label>
+          <input type="number" step="0.01" id="bk-in-price-usd" class="sq-input" value="${book && book.priceUSD ? book.priceUSD : ''}" placeholder="يُحسب تلقائياً إن تُرك فارغاً">
+        </div>
+        <div>
+          <label class="sq-field-label">السعر بالجنيه المصري (ج.م) — اختياري:</label>
+          <input type="number" step="1" id="bk-in-price-egp" class="sq-input" value="${book && book.priceEGP ? book.priceEGP : ''}" placeholder="يُحسب تلقائياً إن تُرك فارغاً">
+        </div>
+      </div>
+
+      <label class="sq-field-label" style="margin-top:4px;"><i class="fa-brands fa-google-drive"></i> رابط ملف الكتاب على Google Drive أو PDF (للقراءة الآمنة أو التحميل):</label>
+      <input type="url" id="bk-in-dlurl" class="sq-input" value="${escapeHtml(book && book.downloadUrl ? book.downloadUrl : '')}" placeholder="الصق رابط المشاركة من Google Drive أو رابط PDF مباشر...">
+
+      <!-- خيارات الإتاحة المرنة (تظهر للإدارة والناشر للجمع بين الورقي والرقمي والقراءة الآمنة) -->
+      <div style="background:var(--card); border:1px solid var(--border); border-radius:12px; padding:10px; margin-top:6px;">
+        <div style="font-size:11.5px; font-weight:900; margin-bottom:6px; color:var(--text-main);"><i class="fa-solid fa-sliders" style="color:var(--accent);"></i> صلاحيات إتاحة الكتاب للقراء (يمكن تفعيلها معاً):</div>
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:5px; font-size:12px; font-weight:800; cursor:pointer;">
+            <input type="checkbox" id="bk-in-allow-paper" ${!book || book.allowPaperOrder !== false ? 'checked' : ''} style="width:16px; height:16px;"> متاح للطلب الورقي والشحن
+          </label>
+          <label style="display:flex; align-items:center; gap:5px; font-size:12px; font-weight:800; cursor:pointer;">
+            <input type="checkbox" id="bk-in-allow-read" ${!book || book.allowOnlineRead !== false ? 'checked' : ''} style="width:16px; height:16px;"> متاح للقراءة الآمنة داخل الموقع
+          </label>
+          <label style="display:flex; align-items:center; gap:5px; font-size:12px; font-weight:800; cursor:pointer;">
+            <input type="checkbox" id="bk-in-allow-dl" ${!book || book.allowDirectDownload !== false ? 'checked' : ''} style="width:16px; height:16px;"> مسموح بتحميل الملف في الخلفية
+          </label>
+        </div>
+      </div>
+
+      <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:8px;">
+        <label style="display:flex; align-items:center; gap:5px; font-size:12px; font-weight:800; cursor:pointer;">
+          <input type="checkbox" id="bk-in-offer" ${book && book.isOffer ? 'checked' : ''} style="width:16px; height:16px;"> تمييز كـ (عرض خاص)
+        </label>
+        <label style="display:flex; align-items:center; gap:5px; font-size:12px; font-weight:800; cursor:pointer;">
+          <input type="checkbox" id="bk-in-bestseller" ${book && book.isBestSeller ? 'checked' : ''} style="width:16px; height:16px;"> تمييز كـ (الأكثر رواجاً)
+        </label>
+        <label style="display:flex; align-items:center; gap:5px; font-size:12px; font-weight:800; cursor:pointer;">
+          <input type="checkbox" id="bk-in-featured" ${book && book.isFeatured ? 'checked' : ''} style="width:16px; height:16px;"> تمييز في صدارة المختارات
+        </label>
+      </div>
+    </div>
+
+    <label class="sq-field-label"><i class="fa-solid fa-align-right"></i> نبذة وملخص الكتاب (اختياري):</label>
+    <textarea id="bk-in-desc" class="sq-input" style="min-height:95px; resize:vertical;" placeholder="اكتب وصفاً أو ملخصاً للكتاب...">${escapeHtml(book ? (book.desc || '') : '')}</textarea>
+
+    <details class="sq-accordion-box" style="margin-bottom:14px;">
+      <summary><span><i class="fa-solid fa-sliders" style="color:var(--accent); margin-left:6px;"></i> بيانات فهرسية إضافية ونبذة الكاتب (الصفحات، سنة النشر، ISBN) — اختياري</span></summary>
+      <div style="margin-top:10px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+        <div>
+          <label class="sq-field-label">حالة التوفر:</label>
+          <select id="bk-in-avail" class="sq-select">
+            <option value="available" ${!book || book.availability === 'available' ? 'selected' : ''}>متوفر للطلب والشحن</option>
+            <option value="digital" ${book && book.availability === 'digital' ? 'selected' : ''}>نسخة رقمية</option>
+            <option value="soon" ${book && book.availability === 'soon' ? 'selected' : ''}>قريباً</option>
+            <option value="out" ${book && book.availability === 'out' ? 'selected' : ''}>نفدت النسخ الورقية</option>
+          </select>
+        </div>
+        <div>
+          <label class="sq-field-label">التقييم المبدئي (من 5):</label>
+          <input type="number" step="0.1" min="1" max="5" id="bk-in-rating" class="sq-input" value="${book && book.initialRating ? book.initialRating : '5.0'}">
+        </div>
+        <input type="text" id="bk-in-pages" class="sq-input" style="margin:0!important;" value="${escapeHtml(book ? (book.pages || '') : '')}" placeholder="عدد الصفحات (اختياري)">
+        <input type="text" id="bk-in-year" class="sq-input" style="margin:0!important;" value="${escapeHtml(book ? (book.publishYear || '') : '')}" placeholder="سنة النشر (اختياري)">
+        <input type="text" id="bk-in-pub" class="sq-input" style="margin:0!important;" value="${escapeHtml(book ? (book.publisherName || '') : '')}" placeholder="اسم دار النشر النصي (اختياري)">
+        <input type="text" id="bk-in-isbn" class="sq-input" style="margin:0!important;" value="${escapeHtml(book ? (book.isbn || '') : '')}" placeholder="رقم ردمك ISBN (اختياري)">
+      </div>
+      <textarea id="bk-in-author-bio" class="sq-input" style="margin-top:8px!important; min-height:60px;" placeholder="نبذة مختصرة عن الكاتب (اختياري — تظهر في القائمة المنسدلة بصفحة الكتاب)...">${escapeHtml(book ? (book.authorBio || '') : '')}</textarea>
+      <input type="url" id="bk-in-exturl" class="sq-input" style="margin-top:4px!important;" value="${escapeHtml(book ? (book.externalUrl || '') : '')}" placeholder="رابط خارجي إضافي (مثل Google Play Books) — اختياري">
+    </details>
+
+    <button class="sq-btn sq-btn-gold" id="sq-save-book-btn" style="width:100%; padding:12px!important; font-size:14px!important;" onclick="window.sqSaveBookFromStudio()">
+      <i class="fa-solid fa-floppy-disk"></i> ${book ? 'حفظ كافة التعديلات على الكتاب' : 'نشر وإضافة الكتاب في المتجر الآن'}
+    </button>
+  `;
+
+  window.sqSwitchMainView('publish_book');
+};
+
+// التبديل المتعدد لتصنيفات وفئات الكتاب
+window.sqToggleBookCategorySelection = function(catKey) {
+  const idx = AppState.selectedBookCategories.indexOf(catKey);
+  if (idx >= 0) {
+    if (AppState.selectedBookCategories.length > 1) {
+      AppState.selectedBookCategories.splice(idx, 1);
+    } else {
+      return sqShowToast("يجب بقاء فئة واحدة على الأقل محددة للكتاب", "warning");
+    }
+  } else {
+    AppState.selectedBookCategories.push(catKey);
+  }
+  const chip = document.getElementById('bkcat-chip-' + catKey);
+  if (chip) chip.classList.toggle('active', AppState.selectedBookCategories.includes(catKey));
+};
+
+// كاشف التشابه التلقائي بين عنوان الكتاب واسم الكاتب أو الكتب الموجودة مسبقاً
+window.sqCheckBookDuplicateAndAuthorMatch = function() {
+  const alertBox = document.getElementById('bk-similarity-alert');
+  if (!alertBox) return;
+  const titleVal = (document.getElementById('bk-in-title')?.value || '').trim();
+  const authorVal = (document.getElementById('bk-in-author-name')?.value || '').trim();
+
+  const warnings = [];
+
+  // 1. فحص إذا كان عنوان الكتاب يطابق اسم الكاتب بالخطأ
+  if (titleVal.length >= 3 && authorVal.length >= 3 && titleVal.toLowerCase() === authorVal.toLowerCase()) {
+    warnings.push(`⚠️ تنبيه ذكي: عنوان الكتاب "${escapeHtml(titleVal)}" مطابق تماماً لاسم المؤلف! تأكد من عدم كتابة اسم المؤلف في خانة العنوان.`);
+  }
+
+  // 2. فحص إذا كان هناك كتاب بنفس العنوان مرفوع مسبقاً في المتجر
+  if (titleVal.length >= 3) {
+    const similarExisting = AppState.booksList.filter(b => b.id !== AppState.editingBookId && (b.title || '').trim().toLowerCase() === titleVal.toLowerCase());
+    if (similarExisting.length > 0) {
+      const ex = similarExisting[0];
+      warnings.push(`⚠️ تنبيه تشابه: يوجد كتاب مرفوع مسبقاً في المتجر بنفس العنوان "${escapeHtml(ex.title)}" (للمؤلف: ${escapeHtml(ex.authorName || 'غير محدد')}).`);
+    }
+  }
+
+  if (warnings.length > 0) {
+    alertBox.style.display = 'block';
+    alertBox.innerHTML = warnings.join('<br>');
+  } else {
+    alertBox.style.display = 'none';
+    alertBox.innerHTML = '';
+  }
+};
+
+window.sqFilterAuthorAccountsForBook = function(query) {
+  const resBox = document.getElementById('bk-author-search-results');
+  if (!resBox) return;
+  const q = (query || '').toLowerCase().trim();
+  if (!q) { resBox.innerHTML = ''; return; }
+
+  const matches = Object.keys(AppState.allUsers).filter(uid => {
+    const u = AppState.allUsers[uid] || {};
+    const name = getRealName(uid, u.displayName).toLowerCase();
+    const skid = ('sk-' + uid.substring(0, 6)).toLowerCase();
+    return name.includes(q) || skid.includes(q) || (u.email || '').toLowerCase().includes(q);
+  }).slice(0, 8);
+
+  if (!matches.length) {
+    resBox.innerHTML = `<div style="font-size:11.5px; color:var(--text-muted); padding:6px;">لا يوجد عضو مطابق، يمكنك الاكتفاء بكتابة اسم المؤلف نصياً أعلاه.</div>`;
+    return;
+  }
+
+  resBox.innerHTML = matches.map(uid => {
+    const u = AppState.allUsers[uid] || {};
+    const name = getRealName(uid, u.displayName);
+    const skid = 'SK-' + uid.substring(0, 6).toUpperCase();
+    return `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 10px; background:var(--card); border:1px solid var(--border); border-radius:10px; cursor:pointer;" onclick="window.sqSelectBookAuthorUid('${uid}', '${escapeHtml(name)}')">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <img src="${getRealPhoto(uid, u.photoURL)}" style="width:26px; height:26px; border-radius:50%; object-fit:cover;">
+          <span style="font-size:12px; font-weight:800;">${escapeHtml(name)} <small style="color:var(--text-muted);">(${skid})</small></span>
+        </div>
+        <span style="font-size:11px; color:var(--accent); font-weight:900;"><i class="fa-solid fa-link"></i> ربط</span>
+      </div>
+    `;
+  }).join('');
+};
+
+window.sqSelectBookAuthorUid = function(uid, authorName) {
+  AppState.selectedAuthorUidForBook = uid || '';
+  const textEl = document.getElementById('bk-linked-author-text');
+  const nameIn = document.getElementById('bk-in-author-name');
+  const resBox = document.getElementById('bk-author-search-results');
+  if (resBox) resBox.innerHTML = '';
+
+  if (uid) {
+    const skid = 'SK-' + uid.substring(0, 6).toUpperCase();
+    if (textEl) textEl.innerText = `مربوط بحساب: ${decodeEntities(authorName)} (${skid})`;
+    if (nameIn && !nameIn.value.trim()) nameIn.value = decodeEntities(authorName);
+    sqShowToast("تم ربط الكتاب بحساب الكاتب!", "success");
+  } else {
+    if (textEl) textEl.innerText = 'غير مربوط بحساب عضو بعد (سيظهر بالاسم النصي فقط)';
+  }
+  window.sqCheckBookDuplicateAndAuthorMatch();
+};
+
+window.sqAddNewBookCategoryPrompt = function() {
+  window.sqOpenCustomPrompt("اكتب اسم الفئة أو القسم الجديد لإضافته إلى المتجر:", "", (catName) => {
+    if (!catName || catName.length < 2) return;
+    const catKey = 'cat_' + Date.now();
+    const updatedCustom = { ...(AppState.customBookCategories || {}), [catKey]: { label: catName, icon: 'fa-tag' } };
+    AppState.customBookCategories = updatedCustom;
+    AppState.selectedBookCategories.push(catKey);
+    db.collection("safaqat_settings").doc("general").set({ customBookCategories: updatedCustom }, { merge: true }).then(() => {
+      const box = document.getElementById('bk-multi-cats-box');
+      if (box) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.id = 'bkcat-chip-' + catKey;
+        btn.className = 'sq-tab-pill active';
+        btn.onclick = () => window.sqToggleBookCategorySelection(catKey);
+        btn.innerHTML = `<i class="fa-solid fa-tag"></i> ${escapeHtml(catName)}`;
+        box.appendChild(btn);
+      }
+      sqShowToast(`تم إنشاء فئة "${catName}" وتحديدها!`, "success");
+    });
+  });
+};
+
+window.sqSaveBookFromStudio = function() {
+  if (!window.sqHasPermission('manage_books')) return;
+  const title = (document.getElementById('bk-in-title')?.value || '').trim();
+  if (!title) return sqShowToast("يرجى كتابة عنوان الكتاب فقط على الأقل", "warning");
+
+  const authorUid = AppState.selectedAuthorUidForBook || '';
+  const rawAuthorName = (document.getElementById('bk-in-author-name')?.value || '').trim();
+  const authorName = rawAuthorName || (authorUid ? getRealName(authorUid, '') : 'مؤلف');
+
+  const pubUid = document.getElementById('bk-in-pub-uid')?.value || AppState.selectedPublisherUidForBook || 'DAR_MAIN';
+  const rawPubName = (document.getElementById('bk-in-pub')?.value || '').trim();
+  const publisherName = rawPubName || (pubUid === 'DAR_MAIN' ? APP_NAME : getRealName(pubUid, APP_NAME));
+
+  const cats = (Array.isArray(AppState.selectedBookCategories) && AppState.selectedBookCategories.length)
+    ? AppState.selectedBookCategories
+    : ['novels'];
+
+  const priceSAR = parseFloat(document.getElementById('bk-in-price-sar')?.value) || 0;
+  const oldPriceSAR = parseFloat(document.getElementById('bk-in-old-sar')?.value) || 0;
+  const priceUSD = parseFloat(document.getElementById('bk-in-price-usd')?.value) || 0;
+  const priceEGP = parseFloat(document.getElementById('bk-in-price-egp')?.value) || 0;
+
+  const payload = {
+    title: title,
+    cover: AppState.pendingBookCover || APP_LOGO_URL,
+    category: cats[0],
+    categories: cats,
+    authorName: authorName,
+    authorUid: authorUid,
+    authorBio: (document.getElementById('bk-in-author-bio')?.value || '').trim(),
+    publisherUid: pubUid,
+    publisherName: publisherName,
+    price: priceSAR,
+    oldPrice: oldPriceSAR,
+    priceSAR: priceSAR,
+    oldPriceSAR: oldPriceSAR,
+    priceUSD: priceUSD,
+    priceEGP: priceEGP,
+    currency: 'ر.س',
+    downloadUrl: (document.getElementById('bk-in-dlurl')?.value || '').trim(),
+    allowPaperOrder: Boolean(document.getElementById('bk-in-allow-paper')?.checked),
+    allowOnlineRead: Boolean(document.getElementById('bk-in-allow-read')?.checked),
+    allowDirectDownload: Boolean(document.getElementById('bk-in-allow-dl')?.checked),
+    availability: document.getElementById('bk-in-avail')?.value || 'available',
+    initialRating: Math.min(5, Math.max(1, parseFloat(document.getElementById('bk-in-rating')?.value) || 5.0)),
+    desc: (document.getElementById('bk-in-desc')?.value || '').trim(),
+    pages: (document.getElementById('bk-in-pages')?.value || '').trim(),
+    publishYear: (document.getElementById('bk-in-year')?.value || '').trim(),
+    isbn: (document.getElementById('bk-in-isbn')?.value || '').trim(),
+    externalUrl: (document.getElementById('bk-in-exturl')?.value || '').trim(),
+    isOffer: Boolean(document.getElementById('bk-in-offer')?.checked),
+    isBestSeller: Boolean(document.getElementById('bk-in-bestseller')?.checked),
+    isFeatured: Boolean(document.getElementById('bk-in-featured')?.checked),
+    updatedAt: Date.now()
+  };
+
+  if (authorUid) {
+    const authorUpdates = { isAuthor: true };
+    if (pubUid) {
+      authorUpdates.linkedPublishers = firebase.firestore.FieldValue.arrayUnion(pubUid);
+    }
+    db.collection("safaqat_users").doc(authorUid).update(authorUpdates).catch(() => {});
+  }
+
+  if (AppState.editingBookId) {
+    db.collection("safaqat_books").doc(AppState.editingBookId).update(payload).then(() => {
+      sqShowToast("تم حفظ التعديلات على الكتاب بنجاح!", "success");
+      window.sqOpenBookDetail(AppState.editingBookId);
+    });
+  } else {
+    payload.createdAt = Date.now();
+    payload.views = 1;
+    payload.readsCount = 1;
+    payload.salesCount = 0;
+    payload.downloadsCount = 0;
+    payload.reviews = [];
+    db.collection("safaqat_books").add(payload).then(docRef => {
+      sqShowToast("تم نشر الكتاب في المتجر بنجاح!", "success");
+      window.sqOpenBookDetail(docRef.id);
+    });
+  }
+};
+
+window.sqDeleteBook = function(bookId) {
+  if (!window.sqHasPermission('manage_books')) return;
+  if (!confirm("هل أنت متأكد من حذف هذا الكتاب نهائياً من المتجر؟")) return;
+  db.collection("safaqat_books").doc(bookId).delete().then(() => {
+    sqShowToast("تم حذف الكتاب", "warning");
+    window.sqSwitchMainView('store');
+  });
+};
+
+window.sqStartPostForBook = function(bookId) {
+  if (!AppState.currentUser) { sqShowToast("سجل دخولك الأول للمشاركة", "warning"); return window.sqLogin(); }
+  const book = AppState.booksList.find(b => b.id === bookId); if (!book) return;
+  window.sqOpenPublishModal(null, book);
+};
+
+// =========================================================
+// 🛒 محرك السلة، الفواتير (SK-XXXXXX)، الاسم الحقيقي الإلزامي، وإخلاء المسؤولية
+// =========================================================
+window.sqInitCartFromStorage = function() {
+  try {
+    const savedCart = localStorage.getItem('sq_cart_items_v18');
+    if (savedCart) AppState.cart = JSON.parse(savedCart) || [];
+  } catch (e) { AppState.cart = []; }
+  window.sqUpdateCartBadge();
+};
+
+window.sqSaveCartToStorage = function() {
+  try { localStorage.setItem('sq_cart_items_v18', JSON.stringify(AppState.cart)); } catch (e) {}
+  window.sqUpdateCartBadge();
+};
+
+window.sqUpdateCartBadge = function() {
+  const totalQty = (AppState.cart || []).reduce((s, item) => s + (Number(item.qty) || 1), 0);
+  const dockDot = document.getElementById('dock-cart-dot');
+  if (dockDot) {
+    if (totalQty > 0) { dockDot.innerText = totalQty; dockDot.style.display = 'flex'; }
+    else { dockDot.style.display = 'none'; }
+  }
+};
+
+window.sqAddToCart = function(bookId, qty = 1, openCartImmediately = false) {
+  const book = AppState.booksList.find(b => b.id === bookId);
+  if (!book) return sqShowToast("الكتاب غير متوفر حالياً", "warning");
+  if (book.availability === 'out') return sqShowToast("نفدت النسخ الورقية لهذا الكتاب حالياً", "danger");
+
+  window.SafaqatAI.trackSignal('book', book, 5);
+  const pSAR = window.sqFormatBookPrice(book, 'SAR');
+  const existing = AppState.cart.find(x => x.bookId === bookId);
+  if (existing) {
+    existing.qty = Math.min(20, (existing.qty || 1) + qty);
+  } else {
+    AppState.cart.push({
+      bookId: book.id,
+      title: book.title,
+      authorName: book.authorUid ? getRealName(book.authorUid, book.authorName) : (book.authorName || ''),
+      publisherUid: book.publisherUid || 'DAR_MAIN',
+      publisherName: book.publisherName || APP_NAME,
+      cover: book.cover || APP_LOGO_URL,
+      priceSAR: pSAR.current,
+      priceUSD: book.priceUSD || 0,
+      priceEGP: book.priceEGP || 0,
+      price: pSAR.current,
+      currency: 'ر.س',
+      qty: Math.max(1, qty)
+    });
+  }
+  AppState.lastIssuedOrder = null;
+  window.sqSaveCartToStorage();
+  sqShowToast(`تمت إضافة "${book.title}" إلى سلتك!`, "success");
+  if (openCartImmediately) {
+    window.sqSwitchMainView('cart_page');
+  }
+};
+
+window.sqUpdateCartQty = function(bookId, delta) {
+  const idx = AppState.cart.findIndex(x => x.bookId === bookId);
+  if (idx < 0) return;
+  AppState.cart[idx].qty = (AppState.cart[idx].qty || 1) + delta;
+  if (AppState.cart[idx].qty <= 0) AppState.cart.splice(idx, 1);
+  window.sqSaveCartToStorage();
+  window.sqRenderCartPage();
+};
+
+window.sqClearCart = function() {
+  AppState.cart = [];
+  window.sqSaveCartToStorage();
+  window.sqRenderCartPage();
+};
+
+window.sqListenOrders = function() {
+  if (!AppState.currentUser) return;
+  if (AppState.ordersUnsubscribe) AppState.ordersUnsubscribe();
+  const canManageAllOrders = AppState.isAdmin || (AppState.userData.permissions || []).includes('manage_orders');
+  const isPublisherAccount = Boolean(AppState.userData && AppState.userData.isPublisher);
+
+  const ref = (canManageAllOrders || isPublisherAccount)
+    ? db.collection("safaqat_orders")
+    : db.collection("safaqat_orders").where("buyerUid", "==", AppState.currentUser.uid);
+
+  AppState.ordersUnsubscribe = ref.onSnapshot(snap => {
+    AppState.ordersList = [];
+    snap.forEach(doc => AppState.ordersList.push({ id: doc.id, ...doc.data() }));
+    AppState.ordersList.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    if (AppState.activeMainView === 'cart_page') window.sqRenderCartPage();
+    if (AppState.activeMainView === 'settings_page' && AppState.settingsSubTab === 'admin') window.sqRenderAdminDashboard();
+  }, err => {});
+};
+
+window.sqRenderOrderStepper = function(statusKey) {
+  if (statusKey === 'cancelled') {
+    return `<div style="background:rgba(239,68,68,0.12); color:var(--danger); border:1px solid rgba(239,68,68,0.3); padding:8px 12px; border-radius:12px; font-size:12px; font-weight:800; text-align:center; margin-top:8px;"><i class="fa-solid fa-ban"></i> تم إلغاء هذا الطلب</div>`;
+  }
+  const curStep = (ORDER_STATUS_MAP[statusKey] && ORDER_STATUS_MAP[statusKey].step) || 1;
+  const steps = [
+    { s: 1, lbl: 'تمت المراجعة', ic: 'fa-file-circle-check' },
+    { s: 2, lbl: 'تم التواصل', ic: 'fa-phone-volume' },
+    { s: 3, lbl: 'قيد التجهيز', ic: 'fa-box-open' },
+    { s: 4, lbl: 'تم الشحن', ic: 'fa-truck-fast' },
+    { s: 5, lbl: 'تم التسليم', ic: 'fa-circle-check' }
+  ];
+  return `
+    <div class="sq-order-stepper">
+      ${steps.map(st => {
+        const cls = st.s < curStep ? 'done' : (st.s === curStep ? 'current' : '');
+        return `<div class="sq-step-node ${cls}"><i class="fa-solid ${st.ic}" style="font-size:13px;"></i><span>${st.lbl}</span></div>`;
+      }).join('')}
+    </div>
+  `;
+};
+
+window.sqRenderCartPage = function() {
+  const container = document.getElementById('sq-view-cart-page');
+  if (!container) return;
+
+  const cartItems = AppState.cart || [];
+  const dispCurr = AppState.displayCurrency || 'SAR';
+  const currSymbol = (CURRENCY_CONFIG[dispCurr] && CURRENCY_CONFIG[dispCurr].symbol) || 'ر.س';
+
+  let totalInDisp = 0;
+  let totalInSAR = 0;
+  cartItems.forEach(item => {
+    const bObj = AppState.booksList.find(b => b.id === item.bookId) || item;
+    const pDisp = window.sqFormatBookPrice(bObj, dispCurr);
+    const pSar = window.sqFormatBookPrice(bObj, 'SAR');
+    totalInDisp += (pDisp.current * (Number(item.qty) || 1));
+    totalInSAR += (pSar.current * (Number(item.qty) || 1));
+  });
+  totalInDisp = Number(totalInDisp.toFixed(dispCurr === 'USD' ? 2 : 0));
+  totalInSAR = Number(totalInSAR.toFixed(2));
+
+  let issuedInvoiceBanner = '';
+  if (AppState.lastIssuedOrder) {
+    const ord = AppState.lastIssuedOrder;
+    issuedInvoiceBanner = `
+      <div class="sq-hub-card" style="background:linear-gradient(135deg,#064e3b 0%,#022c22 100%); color:#fff; border:2px solid #fbbf24;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <span style="background:#fbbf24; color:#0f172a; font-size:11.5px; font-weight:900; padding:3px 10px; border-radius:12px;"><i class="fa-solid fa-file-circle-check"></i> تم إصدار الفاتورة بنجاح</span>
+          <strong style="font-size:15px; color:#fbbf24; letter-spacing:1px;">#${escapeHtml(ord.orderCode)}</strong>
+        </div>
+        <p style="font-size:13px; line-height:1.75; color:#ecfdf5; margin-bottom:12px;">
+          تم توثيق فاتورتك برقم <strong>(${escapeHtml(ord.orderCode)})</strong> باسم المستلم <strong>(${escapeHtml(ord.buyerName)})</strong>. اضغط الزر أدناه لإرسال الفاتورة فوراً إلى واتساب الدار:
+        </p>
+        <button class="sq-btn" style="width:100%; background:#25D366!important; color:#fff!important; padding:12px!important; font-size:14px!important;" onclick="window.sqSendOrderToWhatsApp('${escapeHtml(ord.orderCode)}')">
+          <i class="fa-brands fa-whatsapp" style="font-size:18px;"></i> إرسال وتأكيد الفاتورة عبر واتساب الآن
+        </button>
+      </div>
+    `;
+  }
+
+  let cartSectionHtml = '';
+  if (!cartItems.length) {
+    cartSectionHtml = `
+      <div class="sq-hub-card" style="text-align:center; padding:35px 18px;">
+        <i class="fa-solid fa-bag-shopping fa-2x" style="color:var(--accent); opacity:0.5; margin-bottom:10px;"></i><br>
+        <strong style="font-size:15px;">سلة المشتريات فارغة حالياً</strong>
+        <p style="font-size:12.5px; color:var(--text-muted); margin:6px 0 14px 0;">تصفح متجر الإصدارات وأضف الكتب التي ترغب باقتنائها إلى سلتك.</p>
+        <button class="sq-btn sq-btn-gold" onclick="window.sqSwitchMainView('store')"><i class="fa-solid fa-store"></i> تصفح المتجر والمكتبة</button>
+      </div>
+    `;
+  } else {
+    const itemsHtml = cartItems.map(item => {
+      const bObj = AppState.booksList.find(b => b.id === item.bookId) || item;
+      const pDisp = window.sqFormatBookPrice(bObj, dispCurr);
+      return `
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px; background:var(--bg); border:1px solid var(--border); border-radius:14px; margin-bottom:8px;">
+          <div style="display:flex; align-items:center; gap:10px; overflow:hidden; cursor:pointer;" onclick="window.sqOpenBookDetail('${item.bookId}')">
+            <img src="${escapeHtml(item.cover)}" style="width:44px; height:64px; object-fit:cover; border-radius:8px; border:1px solid var(--accent); flex-shrink:0;">
+            <div style="overflow:hidden;">
+              <div style="font-weight:900; font-size:13px; color:var(--text-main); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(item.title)}</div>
+              <div style="font-size:11px; color:var(--text-muted);">${escapeHtml(item.authorName)} • ${escapeHtml(item.publisherName || APP_NAME)}</div>
+              <div style="font-size:12px; font-weight:900; color:var(--accent); margin-top:2px;">${pDisp.current} ${escapeHtml(pDisp.symbol)}</div>
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+            <button class="sq-icon-btn" style="width:28px; height:28px; font-size:12px;" onclick="window.sqUpdateCartQty('${item.bookId}', -1)"><i class="fa-solid fa-minus"></i></button>
+            <strong style="font-size:13px; min-width:20px; text-align:center;">${item.qty}</strong>
+            <button class="sq-icon-btn" style="width:28px; height:28px; font-size:12px;" onclick="window.sqUpdateCartQty('${item.bookId}', 1)"><i class="fa-solid fa-plus"></i></button>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    const defCountry = (AppState.userData && AppState.userData.nationality && COUNTRIES_MAP[AppState.userData.nationality]) ? COUNTRIES_MAP[AppState.userData.nationality].name : '';
+
+    // ملاحظة هامة: حقل الاسم الحقيقي فارغ عمداً ولا يسحب الاسم المستعار للحساب لضمان كتابة الاسم الحقيقي للشحن
+    cartSectionHtml = `
+      <div class="sq-hub-card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h3 style="font-size:15.5px; font-weight:900;"><i class="fa-solid fa-cart-shopping" style="color:var(--accent);"></i> الكتب المختارة في سلتك (${cartItems.length})</h3>
+          <button style="background:none; border:none; color:var(--danger); font-size:12px; font-weight:bold; cursor:pointer;" onclick="window.sqClearCart()"><i class="fa-solid fa-trash"></i> إفراغ السلة</button>
+        </div>
+        ${itemsHtml}
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:11px 14px; background:var(--bg); border-radius:14px; border:1.5px solid var(--accent-border); margin-top:10px;">
+          <div>
+            <span style="font-size:13.5px; font-weight:900;">إجمالي الفاتورة:</span>
+            <select class="sq-compact-select" style="margin-right:6px; font-size:11px; padding:3px 7px;" onchange="window.sqSetDisplayCurrency(this.value)">
+              <option value="SAR" ${dispCurr === 'SAR' ? 'selected' : ''}>ر.س (SAR)</option>
+              <option value="USD" ${dispCurr === 'USD' ? 'selected' : ''}>$ (USD)</option>
+              <option value="EGP" ${dispCurr === 'EGP' ? 'selected' : ''}>ج.م (EGP)</option>
+            </select>
+          </div>
+          <strong style="font-size:17.5px; font-weight:900; color:var(--accent);">${totalInDisp} ${escapeHtml(currSymbol)}</strong>
+        </div>
+      </div>
+
+      <div class="sq-hub-card">
+        <h3 style="font-size:15.5px; font-weight:900; margin-bottom:4px;"><i class="fa-solid fa-file-invoice" style="color:var(--accent);"></i> بيانات الشحن وإصدار الفاتورة الرسمية</h3>
+        <p style="font-size:11.5px; color:var(--text-muted); margin-bottom:12px;">يرجى إدخال بياناتك الحقيقية بدقة (لا يتم استخدام الاسم المستعار للحساب في فواتير الشحن):</p>
+
+        <label class="sq-field-label"><i class="fa-solid fa-user-check"></i> الاسم الحقيقي الثلاثي أو الرباعي للمستلم (إلزامي *):</label>
+        <input type="text" id="ord-in-name" class="sq-input" value="" placeholder="اكتب اسمك الحقيقي الكامل كما في الهوية لاستلام الشحنة...">
+
+        <label class="sq-field-label"><i class="fa-solid fa-phone"></i> رقم الجوال / الواتساب الفعّال للتواصل (إلزامي *):</label>
+        <input type="tel" id="ord-in-phone" class="sq-input" placeholder="مثال: +9665XXXXXXXX أو +201XXXXXXXXX">
+
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+          <div>
+            <label class="sq-field-label"><i class="fa-solid fa-earth-americas"></i> الدولة (إلزامي *):</label>
+            <input type="text" id="ord-in-country" class="sq-input" value="${escapeHtml(defCountry)}" placeholder="الدولة">
+          </div>
+          <div>
+            <label class="sq-field-label"><i class="fa-solid fa-city"></i> المدينة / المحافظة (إلزامي *):</label>
+            <input type="text" id="ord-in-city" class="sq-input" placeholder="اسم المدينة">
+          </div>
+        </div>
+
+        <label class="sq-field-label"><i class="fa-solid fa-location-dot"></i> العنوان التفصيلي للاستلام (إلزامي *):</label>
+        <input type="text" id="ord-in-address" class="sq-input" placeholder="الحي، الشارع، رقم المبنى أو أقرب معلم">
+
+        <label class="sq-field-label"><i class="fa-solid fa-comment-dots"></i> ملاحظات إضافية (اختياري):</label>
+        <textarea id="ord-in-notes" class="sq-input" style="min-height:60px; resize:none;" placeholder="أي ملاحظة تخص التوصيل..."></textarea>
+
+        <!-- تنبيه وإقرار إخلاء المسؤولية عن صحة البيانات -->
+        <div style="background:rgba(245,158,11,0.12); border:1.5px solid var(--warning); border-radius:14px; padding:11px 13px; margin-bottom:12px;">
+          <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; font-size:12px; font-weight:800; line-height:1.65; color:var(--text-main);">
+            <input type="checkbox" id="ord-in-disclaimer" style="width:18px; height:18px; margin-top:3px; flex-shrink:0;">
+            <span>أقر بأن جميع البيانات المدخلة أعلاه (الاسم الحقيقي، رقم الهاتف، والعنوان) صحيحة وحقيقية، وأتحمل كامل المسؤولية عن أي خطأ فيها، ولا تتحمل منصة صفقات كتابية أو دار النشر أي مسؤولية ناتجة عن إدخال بيانات غير صحيحة.</span>
+          </label>
+        </div>
+
+        <button class="sq-btn sq-btn-gold" id="sq-issue-invoice-btn" style="width:100%; padding:12px!important; font-size:14px!important;" onclick="window.sqIssueInvoiceNow()">
+          <i class="fa-solid fa-file-signature"></i> تأكيد البيانات وإصدار الفاتورة الآن
+        </button>
+      </div>
+    `;
+  }
+
+  const myOrders = AppState.currentUser
+    ? AppState.ordersList.filter(o => o.buyerUid === AppState.currentUser.uid)
+    : (AppState.lastIssuedOrder ? [AppState.lastIssuedOrder] : []);
+
+  const myOrdersHtml = myOrders.length ? myOrders.map(ord => {
+    const stObj = ORDER_STATUS_MAP[ord.status || 'pending_review'] || ORDER_STATUS_MAP.pending_review;
+    const booksSummary = (ord.items || []).map(i => `${i.title} (×${i.qty})`).join(' ، ');
+    return `
+      <div style="background:var(--bg); border:1px solid var(--border); border-radius:16px; padding:13px; margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:6px;">
+          <div>
+            <strong style="font-size:14px; color:var(--text-main);">فاتورة رقم: #${escapeHtml(ord.orderCode)}</strong>
+            <span style="font-size:11px; color:var(--text-muted); margin-right:6px;">${sqFormatRelativeTime(ord.createdAt)}</span>
+          </div>
+          <span class="sq-order-status-badge" style="background:${stObj.color}20; color:${stObj.color}; border:1px solid ${stObj.color}50;">
+            <i class="fa-solid ${stObj.icon}"></i> ${stObj.label}
+          </span>
+        </div>
+        <div style="font-size:12px; color:var(--text-main); font-weight:700; margin-bottom:4px;">الكتب: ${escapeHtml(booksSummary)}</div>
+        <div style="font-size:11.5px; color:var(--text-muted);">الإجمالي: <strong style="color:var(--accent);">${ord.totalAmount} ${escapeHtml(ord.currency || 'ر.س')}</strong> • المستلم: ${escapeHtml(ord.buyerName)} (${escapeHtml(ord.country)} - ${escapeHtml(ord.city)})</div>
+        ${window.sqRenderOrderStepper(ord.status || 'pending_review')}
+        ${ord.adminNote ? `<div style="background:var(--card); border-right:3px solid var(--accent); padding:7px 10px; border-radius:8px; font-size:12px; margin-top:6px;"><strong>ملاحظة المبيعات:</strong> ${escapeHtml(ord.adminNote)}</div>` : ''}
+        <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+          <button class="sq-btn" style="background:#25D366!important; color:#fff!important; padding:6px 12px!important; font-size:11.5px!important;" onclick="window.sqSendOrderToWhatsApp('${escapeHtml(ord.orderCode)}')">
+            <i class="fa-brands fa-whatsapp"></i> إرسال / متابعة عبر واتساب الدار
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('') : `<p style="text-align:center; padding:18px; color:var(--text-muted); font-size:12.5px;">لا توجد فواتير سابقة مسجلة في حسابك.</p>`;
+
+  container.innerHTML = `
+    <div class="sq-inpage-topbar">
+      <div class="sq-inpage-title"><i class="fa-solid fa-bag-shopping" style="color:var(--accent);"></i> السلة والفواتير وتتبع الطلبات</div>
+      <button class="sq-back-pill" onclick="window.sqSwitchMainView('store')"><i class="fa-solid fa-arrow-left"></i> المتجر</button>
+    </div>
+    ${issuedInvoiceBanner}
+    ${cartSectionHtml}
+    <div class="sq-hub-card">
+      <h3 style="font-size:15.5px; font-weight:900; margin-bottom:10px;"><i class="fa-solid fa-truck-fast" style="color:var(--accent);"></i> سجل طلباتي وتتبع مراحل الشحن (${myOrders.length})</h3>
+      ${myOrdersHtml}
+    </div>
+  `;
+};
+
+window.sqIssueInvoiceNow = async function() {
+  if (!AppState.cart || !AppState.cart.length) return sqShowToast("السلة فارغة", "warning");
+  const buyerName = (document.getElementById('ord-in-name')?.value || '').trim();
+  const buyerPhone = (document.getElementById('ord-in-phone')?.value || '').trim();
+  const country = (document.getElementById('ord-in-country')?.value || '').trim();
+  const city = (document.getElementById('ord-in-city')?.value || '').trim();
+  const address = (document.getElementById('ord-in-address')?.value || '').trim();
+  const notes = (document.getElementById('ord-in-notes')?.value || '').trim();
+  const disclaimerChecked = Boolean(document.getElementById('ord-in-disclaimer')?.checked);
+
+  if (buyerName.split(/\s+/).length < 2) {
+    return sqShowToast("يرجى كتابة اسمك الحقيقي الكامل (الثلاثي أو الرباعي) وليس اسماً مفرداً أو مستعاراً", "warning");
+  }
+  if (!buyerPhone || !country || !city || !address) {
+    return sqShowToast("يرجى تعبئة رقم الجوال، الدولة، المدينة، والعنوان التفصيلي بالكامل", "warning");
+  }
+  if (!disclaimerChecked) {
+    return sqShowToast("يرجى الموافقة على إقرار صحة البيانات وإخلاء المسؤولية قبل إصدار الفاتورة", "warning");
+  }
+
+  const btn = document.getElementById('sq-issue-invoice-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> جاري توثيق وإصدار الفاتورة...'; }
+
+  const randomSix = Math.floor(100000 + Math.random() * 900000);
+  const orderCode = `SK-${randomSix}`;
+  const dispCurr = AppState.displayCurrency || 'SAR';
+  const currSymbol = (CURRENCY_CONFIG[dispCurr] && CURRENCY_CONFIG[dispCurr].symbol) || 'ر.س';
+
+  let totalDisp = 0;
+  let totalSAR = 0;
+  const enrichedItems = AppState.cart.map(item => {
+    const bObj = AppState.booksList.find(b => b.id === item.bookId) || item;
+    const pDisp = window.sqFormatBookPrice(bObj, dispCurr);
+    const pSar = window.sqFormatBookPrice(bObj, 'SAR');
+    const qty = Number(item.qty) || 1;
+    totalDisp += (pDisp.current * qty);
+    totalSAR += (pSar.current * qty);
+    return {
+      ...item,
+      unitPriceDisplay: pDisp.current,
+      unitPriceSAR: pSar.current,
+      lineTotalSAR: Number((pSar.current * qty).toFixed(2)),
+      currencySymbol: currSymbol
+    };
+  });
+
+  const publisherUids = Array.from(new Set(enrichedItems.map(i => i.publisherUid || 'DAR_MAIN')));
+
+  const orderPayload = {
+    orderCode: orderCode,
+    buyerUid: AppState.currentUser ? AppState.currentUser.uid : 'GUEST',
+    buyerAccountAlias: AppState.currentUser ? getRealName(AppState.currentUser.uid, AppState.currentUser.displayName) : 'زائر',
+    buyerName: buyerName, // الاسم الحقيقي للمستلم
+    buyerPhone: buyerPhone,
+    country: country,
+    city: city,
+    address: address,
+    notes: notes,
+    disclaimerAccepted: true,
+    items: enrichedItems,
+    publisherUids: publisherUids,
+    totalAmount: Number(totalDisp.toFixed(dispCurr === 'USD' ? 2 : 0)),
+    totalAmountSAR: Number(totalSAR.toFixed(2)),
+    currency: currSymbol,
+    currencyCode: dispCurr,
+    status: 'pending_review',
+    adminNote: '',
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+
+  try {
+    await db.collection("safaqat_orders").add(orderPayload);
+    enrichedItems.forEach(item => {
+      if (item.bookId) {
+        db.collection("safaqat_books").doc(item.bookId).update({ salesCount: firebase.firestore.FieldValue.increment(Number(item.qty) || 1) }).catch(() => {});
+      }
+    });
+    AppState.lastIssuedOrder = orderPayload;
+    AppState.cart = [];
+    window.sqSaveCartToStorage();
+    window.sqRenderCartPage();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    sqShowToast(`تم إصدار الفاتورة رقم ${orderCode} بنجاح!`, "success");
+    setTimeout(() => window.sqSendOrderToWhatsApp(orderCode), 450);
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-file-signature"></i> تأكيد البيانات وإصدار الفاتورة الآن'; }
+    sqShowToast("تعذر حفظ الفاتورة، يرجى التحقق من اتصال الإنترنت", "danger");
+  }
+};
+
+window.sqSendOrderToWhatsApp = function(orderCode) {
+  const ord = (AppState.ordersList || []).find(o => o.orderCode === orderCode) || AppState.lastIssuedOrder;
+  if (!ord) return;
+
+  let targetWhatsapp = DAR_WHATSAPP_NUMBER || '+201016327947';
+  let targetDarName = APP_NAME;
+
+  const firstItemPubUid = (ord.items && ord.items[0] && ord.items[0].publisherUid) ? ord.items[0].publisherUid : 'DAR_MAIN';
+  if (firstItemPubUid && firstItemPubUid !== 'DAR_MAIN' && AppState.allUsers[firstItemPubUid]) {
+    const pubUser = AppState.allUsers[firstItemPubUid];
+    if (pubUser.publisherWhatsapp && pubUser.publisherWhatsapp.trim().length >= 7) {
+      targetWhatsapp = pubUser.publisherWhatsapp.trim();
+      targetDarName = getRealName(firstItemPubUid, pubUser.displayName);
+    }
+  }
+
+  const cleanPhone = targetWhatsapp.replace(/[^0-9]/g, '');
+  const booksLines = (ord.items || []).map((it, idx) => `${idx + 1}. ${it.title} — العدد: (${it.qty}) — السعر: ${it.unitPriceDisplay || it.price} ${ord.currency || 'ر.س'}`).join('\n');
+
+  const msg = `مرحباً إدارة *${targetDarName}*، أود تأكيد فاتورة طلبي الرسمية عبر منصة *${APP_NAME}*:
+*رقم الفاتورة:* #${ord.orderCode}
+*الاسم الحقيقي للمستلم:* ${ord.buyerName}
+*رقم الجوال للتواصل:* ${ord.buyerPhone}
+*الدولة والمدينة:* ${ord.country} - ${ord.city}
+*العنوان التفصيلي:* ${ord.address || 'غير محدد'}
+
+*الإصدارات المطلوبة:*
+${booksLines}
+
+*إجمالي الفاتورة:* ${ord.totalAmount} ${ord.currency || 'ر.س'}
+${ord.notes ? `*ملاحظات:* ${ord.notes}\n` : ''}
+*(أقر بصحة بيانات الشحن أعلاه وعلى مسؤوليتي الشخصية)*`;
+
+  const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`;
+  window.open(waUrl, '_blank');
+};

@@ -3959,3 +3959,1482 @@ window.sqBookmark = function(postId) {
   if (isBooked) { ref.update({ bookmarks: firebase.firestore.FieldValue.arrayRemove(postId) }); sqShowToast("أُزيلت من المحفوظات", "warning"); }
   else { ref.update({ bookmarks: firebase.firestore.FieldValue.arrayUnion(postId) }); sqShowToast("حُفظت في مفضلتك", "success"); }
 };
+/* =========================================================
+   المحرك البرمجي الشامل — الإصدار 1.8
+   File: app.js (الجزء 3-ب والأخير — نسخة Argon الاحترافية الكاملة)
+   يشمل: نظام المتابعة، الترابط الشبكي (دور النشر ⇄ الكُتّاب ⇄ الكتب)،
+         الملف الشخصي المتكامل، الصفحات القانونية، الإعدادات، القيادة، والمصادقة
+   ========================================================= */
+
+// =========================================================
+// 🔗 محرك الترابط الشبكي بين دور النشر والكُتّاب والكتب
+// =========================================================
+window.sqGetPublisherAuthorsList = function(pubUid) {
+  const authorUidsSet = new Set();
+  const isMainDar = (pubUid === 'DAR_MAIN' || sqIsAdminUid(pubUid));
+
+  // 1. استخراج الكُتّاب من الكتب المنشورة تحت هذه الدار
+  AppState.booksList.forEach(b => {
+    if (!b.authorUid) return;
+    if (isMainDar && (!b.publisherUid || b.publisherUid === 'DAR_MAIN' || b.publisherUid === pubUid)) {
+      authorUidsSet.add(b.authorUid);
+    } else if (b.publisherUid === pubUid) {
+      authorUidsSet.add(b.authorUid);
+    }
+  });
+
+  // 2. استخراج الكُتّاب المرتبطين إدارياً بهذه الدار في ملفاتهم
+  Object.keys(AppState.allUsers).forEach(uKey => {
+    const u = AppState.allUsers[uKey] || {};
+    const linked = Array.isArray(u.linkedPublishers) ? u.linkedPublishers : [];
+    if (linked.includes(pubUid) || (isMainDar && linked.includes('DAR_MAIN'))) {
+      authorUidsSet.add(uKey);
+    }
+  });
+
+  return Array.from(authorUidsSet);
+};
+
+window.sqGetAuthorPublishersList = function(authorUid) {
+  const pubUidsSet = new Set();
+  const u = AppState.allUsers[authorUid] || {};
+  if (Array.isArray(u.linkedPublishers)) {
+    u.linkedPublishers.forEach(p => { if (p) pubUidsSet.add(p); });
+  }
+  AppState.booksList.forEach(b => {
+    if (b.authorUid === authorUid) {
+      pubUidsSet.add(b.publisherUid || 'DAR_MAIN');
+    }
+  });
+  return Array.from(pubUidsSet);
+};
+
+window.sqToggleLinkAuthorToPublisher = function(authorUid, pubUid) {
+  if (!AppState.isAdmin && (!AppState.currentUser || AppState.currentUser.uid !== pubUid)) return;
+  const u = AppState.allUsers[authorUid] || {};
+  const currentList = Array.isArray(u.linkedPublishers) ? [...u.linkedPublishers] : [];
+  const exists = currentList.includes(pubUid);
+
+  const updatedList = exists ? currentList.filter(id => id !== pubUid) : [...currentList, pubUid];
+  db.collection("safaqat_users").doc(authorUid).update({
+    isAuthor: true,
+    linkedPublishers: updatedList
+  }).then(() => {
+    if (AppState.allUsers[authorUid]) {
+      AppState.allUsers[authorUid].isAuthor = true;
+      AppState.allUsers[authorUid].linkedPublishers = updatedList;
+    }
+    sqShowToast(exists ? "تم إلغاء ربط الكاتب بدار النشر" : "تم ربط الكاتب بدار النشر بنجاح!", "success");
+    if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+    if (AppState.activeMainView === 'settings_page') window.sqRenderAdminSubContent();
+  });
+};
+
+// =========================================================
+// 👤 نظام المتابعة (Follow) والملف الشخصي الشبكي المتكامل
+// =========================================================
+window.sqToggleFollowUser = function(targetUid, btnEl, e) {
+  if (e) e.stopPropagation();
+  if (!AppState.currentUser) {
+    sqShowToast("سجل دخولك أولاً لمتابعة الكُتّاب ودور النشر", "warning");
+    return window.sqLogin();
+  }
+  if (!targetUid || targetUid === AppState.currentUser.uid) return;
+
+  const myUid = AppState.currentUser.uid;
+  const currentFollowing = AppState.userData.following || [];
+  const isFollowing = currentFollowing.includes(targetUid);
+
+  if (isFollowing) {
+    AppState.userData.following = currentFollowing.filter(id => id !== targetUid);
+    if (AppState.allUsers[myUid]) AppState.allUsers[myUid].following = AppState.userData.following;
+    if (btnEl) { btnEl.className = 'sq-follow-chip'; btnEl.innerHTML = '<i class="fa-solid fa-plus"></i> متابعة'; }
+    db.collection("safaqat_users").doc(myUid).update({ following: firebase.firestore.FieldValue.arrayRemove(targetUid) });
+    sqShowToast("تم إلغاء المتابعة", "warning");
+  } else {
+    AppState.userData.following = [...currentFollowing, targetUid];
+    if (AppState.allUsers[myUid]) AppState.allUsers[myUid].following = AppState.userData.following;
+    if (btnEl) { btnEl.className = 'sq-follow-chip following'; btnEl.innerHTML = '<i class="fa-solid fa-check"></i> متابَع'; }
+    db.collection("safaqat_users").doc(myUid).update({ following: firebase.firestore.FieldValue.arrayUnion(targetUid) }).then(() => {
+      window.sqSendNotif(targetUid, null, `بدأ ${getRealName(myUid, AppState.currentUser.displayName)} بمتابعة حسابك.`);
+    });
+    sqShowToast("تمت المتابعة! ستظهر لك قصصه وإصداراته دائماً", "success");
+  }
+  window.sqRenderStoriesBar();
+  if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+};
+
+window.sqToggleBlockUser = function(targetUid) {
+  if (!AppState.currentUser || targetUid === AppState.currentUser.uid) return;
+  const myUid = AppState.currentUser.uid;
+  const isBlocked = (AppState.userData.blockedUsers || []).includes(targetUid);
+  if (isBlocked) {
+    db.collection("safaqat_users").doc(myUid).update({ blockedUsers: firebase.firestore.FieldValue.arrayRemove(targetUid) }).then(() => {
+      sqShowToast("تم فك الحظر", "success");
+      if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+    });
+  } else {
+    if (!confirm("حظر هذا الحساب وإخفاء منشوراته؟")) return;
+    db.collection("safaqat_users").doc(myUid).update({
+      blockedUsers: firebase.firestore.FieldValue.arrayUnion(targetUid),
+      following: firebase.firestore.FieldValue.arrayRemove(targetUid)
+    }).then(() => {
+      sqShowToast("تم حظر الحساب", "danger");
+      window.sqSwitchMainView('store');
+    });
+  }
+};
+
+window.sqOnProfileAvatarClick = function() {
+  const uid = AppState.viewedProfileUid;
+  if (!uid) return;
+  if (window.sqUserHasActiveStory(uid)) { window.sqOpenUserStories(uid, 0); }
+  else { window.sqOpenLightbox(document.getElementById('sq-prof-avatar').src); }
+};
+
+window.sqViewProfile = function(uid, defaultTab = null) {
+  window.sqCloseAllMenus();
+  if (!uid || uid === 'DAR_MAIN') {
+    const mainAdm = Object.keys(AppState.allUsers).find(k => ADMINS.includes(AppState.allUsers[k].email));
+    if (mainAdm) uid = mainAdm;
+    else { window.sqSwitchMainView('store'); return; }
+  }
+  AppState.viewedProfileUid = uid;
+  const u = AppState.allUsers[uid] || {};
+  if (defaultTab) {
+    AppState.activeProfileTab = defaultTab;
+  } else {
+    AppState.activeProfileTab = (u.isPublisher || sqIsAdminUid(uid)) ? 'books' : 'posts';
+  }
+  window.sqSwitchMainView('profile_page');
+  window.sqRenderProfilePage();
+};
+
+window.sqSwitchProfileTab = function(tabName) {
+  AppState.activeProfileTab = tabName;
+  window.sqRenderProfileTabContent();
+};
+
+window.sqCopySkid = function(skid) {
+  if (navigator.clipboard) navigator.clipboard.writeText(skid).then(() => sqShowToast(`تم نسخ المعرف: ${skid}`, "success"));
+};
+
+window.sqRenderProfilePage = function() {
+  const uid = AppState.viewedProfileUid; if (!uid) return;
+  const userPosts = AppState.posts.filter(p => p.uid === uid && (!p.isAnon || AppState.isAdmin || (AppState.currentUser && AppState.currentUser.uid === uid)));
+  const isMe = AppState.currentUser && AppState.currentUser.uid === uid;
+
+  db.collection("safaqat_users").doc(uid).get().then(doc => {
+    const d = doc.exists ? doc.data() : {
+      displayName: "عضو في صفقات", photoURL: DEFAULT_PIC, following: [],
+      savedBooks: [], readingShelf: {}, permissions: [], linkedPublishers: [], bio: ""
+    };
+    AppState.allUsers[uid] = d;
+    const isProfileAdmin = Boolean(d.isAdminUser || ADMINS.includes(d.email));
+    const isProfilePub = Boolean(d.isPublisher || isProfileAdmin);
+    const displayName = escapeHtml(getRealName(uid, d.displayName));
+    const avatarUrl = getRealPhoto(uid, d.photoURL);
+    const hasStory = window.sqUserHasActiveStory(uid);
+
+    window.sqUpdateDynamicSEO(`${getRealName(uid, d.displayName)} — الملف الرسمي`, d.bio || `صفحة ${getRealName(uid, d.displayName)} في ${APP_NAME}`, avatarUrl, false);
+
+    document.getElementById('sq-prof-avatar').src = avatarUrl;
+    const ringWrap = document.getElementById('sq-prof-avatar-ring');
+    const storyHint = document.getElementById('sq-prof-story-hint');
+    if (ringWrap) ringWrap.className = 'sq-avatar-upload-wrapper' + (hasStory ? ' sq-has-story-ring' : '');
+    if (storyHint) storyHint.style.display = hasStory ? 'block' : 'none';
+
+    const camBtn = document.getElementById('sq-prof-cam-btn');
+    if (camBtn) camBtn.style.display = isMe ? 'flex' : 'none';
+    const onlineDot = document.getElementById('sq-prof-online-dot');
+    if (onlineDot) onlineDot.style.display = window.sqIsUserOnline(uid) ? 'block' : 'none';
+
+    const topLeftBtns = document.getElementById('sq-prof-top-left-btns');
+    if (topLeftBtns) {
+      const unreadCount = AppState.notificationsList.filter(n => !n.read).length;
+      topLeftBtns.innerHTML = isMe ? `
+        <button class="sq-back-pill" onclick="window.sqOpenSettingsPage('notifs')">
+          <i class="fa-regular fa-bell" style="color:var(--accent);"></i> الإشعارات ${unreadCount > 0 ? `<span style="background:var(--danger); color:#fff; padding:1px 6px; border-radius:10px; font-size:10px;">${unreadCount}</span>` : ''}
+        </button>
+        <button class="sq-back-pill" onclick="window.sqOpenSettingsPage('identity')">
+          <i class="fa-solid fa-sliders" style="color:var(--accent);"></i> الإعدادات
+        </button>
+        ${(AppState.isAdmin || window.sqIsStaffMember()) ? `<button class="sq-back-pill" style="border-color:var(--accent); color:var(--accent);" onclick="window.sqOpenSettingsPage('admin')"><i class="fa-solid fa-shield-halved"></i> ${d.isPublisher && !AppState.isAdmin ? 'لوحة الدار' : 'الإدارة'}</button>` : ''}
+      ` : '';
+    }
+
+    document.getElementById('sq-prof-name').innerHTML = `${displayName} ${window.getUserBadges(uid, false, isProfileAdmin, true)}`;
+    const skidCode = 'SK-' + uid.substring(0, 6).toUpperCase();
+    document.getElementById('sq-prof-skid-bar').innerHTML = `<span class="sq-status-pill" style="cursor:pointer; font-size:11px;" onclick="window.sqCopySkid('${skidCode}')"><i class="fa-solid fa-fingerprint" style="color:var(--accent);"></i> المعرف: <strong>${skidCode}</strong> <i class="fa-regular fa-copy"></i></span>`;
+
+    let pillsHtml = `<span class="sq-status-pill"><i class="fa-solid fa-circle" style="font-size:7px; color:${window.sqIsUserOnline(uid) ? 'var(--success)' : 'var(--text-muted)'};"></i> ${window.sqGetOnlineStatusText(uid)}</span>`;
+    if (d.statusText) pillsHtml += `<span class="sq-status-pill"><i class="fa-solid fa-quote-right" style="color:var(--accent);"></i> ${escapeHtml(d.statusText)}</span>`;
+    if (d.nationality && COUNTRIES_MAP[d.nationality] && COUNTRIES_MAP[d.nationality].name) {
+      pillsHtml += `<span class="sq-status-pill"><i class="fa-solid fa-location-dot" style="color:var(--accent);"></i> ${COUNTRIES_MAP[d.nationality].name}</span>`;
+    }
+    if (d.currentlyReadingBookId) {
+      const rBook = AppState.booksList.find(b => b.id === d.currentlyReadingBookId);
+      if (rBook) pillsHtml += `<span class="sq-status-pill" style="cursor:pointer; border-color:var(--accent);" onclick="window.sqOpenBookDetail('${rBook.id}')"><i class="fa-solid fa-book-open-reader" style="color:var(--accent);"></i> يقرأ: <strong>${escapeHtml(rBook.title)}</strong></span>`;
+    }
+    document.getElementById('sq-prof-meta-pills').innerHTML = pillsHtml;
+
+    // شريط الترابط الشبكي (يعرض دور النشر التي ينتمي لها الكاتب، أو إحصائيات الدار)
+    const netBar = document.getElementById('sq-prof-network-bar');
+    if (netBar) {
+      let netHtml = '';
+      if (isProfilePub) {
+        const pubAuthors = window.sqGetPublisherAuthorsList(isProfileAdmin ? 'DAR_MAIN' : uid);
+        const pubBooks = AppState.booksList.filter(b => isProfileAdmin ? (!b.publisherUid || b.publisherUid === 'DAR_MAIN' || b.publisherUid === uid) : (b.publisherUid === uid));
+        netHtml += `
+          <div style="display:inline-flex; flex-wrap:wrap; justify-content:center; gap:6px; background:var(--accent-soft); border:1px solid var(--accent-border); padding:8px 14px; border-radius:16px; margin-top:4px;">
+            <span style="font-size:12px; font-weight:900; color:var(--text-main);"><i class="fa-solid fa-building-columns" style="color:var(--accent);"></i> ${isProfileAdmin ? 'الدار الرئيسية المعتمدة' : 'دار نشر معتمدة'}</span>
+            <span style="font-size:12px; color:var(--text-muted);">• <strong>${pubBooks.length}</strong> إصدار</span>
+            <span style="font-size:12px; color:var(--text-muted); cursor:pointer;" onclick="window.sqSwitchProfileTab('pub_authors')">• <strong>${pubAuthors.length}</strong> كاتب ومؤلف بالدار</span>
+          </div>
+        `;
+      }
+      const authorPubs = window.sqGetAuthorPublishersList(uid);
+      if (authorPubs.length > 0 && !isProfileAdmin) {
+        const pubsChips = authorPubs.map(pUid => {
+          const isMain = (pUid === 'DAR_MAIN' || sqIsAdminUid(pUid));
+          const pName = isMain ? APP_NAME : getRealName(pUid, 'دار نشر');
+          const badge = isMain ? `<span class="sq-vbadge admin"><i class="fa-solid fa-check"></i></span>` : `<span class="sq-vbadge publisher"><i class="fa-solid fa-check"></i></span>`;
+          return `<span class="sq-status-pill" style="cursor:pointer; border-color:var(--accent);" onclick="window.sqViewProfile('${pUid}', 'books')"><i class="fa-solid fa-building-columns" style="color:var(--accent);"></i> ينشر لدى: <strong>${escapeHtml(pName)}</strong> ${badge}</span>`;
+        }).join('');
+        netHtml += `<div style="margin-top:6px; display:flex; flex-wrap:wrap; justify-content:center; gap:5px;">${pubsChips}</div>`;
+      }
+      netBar.innerHTML = netHtml;
+    }
+
+    const lv = window.sqGetUserLevelInfo(uid);
+    document.getElementById('sq-prof-level-wrap').innerHTML = `
+      <div class="sq-level-box">
+        <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; font-weight:800;">
+          <span>${lv.iconHtml} المستوى ${lv.lvl}: <strong>${lv.title}</strong> (${lv.tier})</span>
+          <span style="color:var(--accent);">${lv.pts} نقطة</span>
+        </div>
+        <div class="sq-level-bar-bg"><div class="sq-level-bar-fill" style="width:${lv.progress}%;"></div></div>
+        <div style="font-size:10.5px; color:var(--text-muted); margin-top:4px; display:flex; justify-content:space-between;">
+          <span>الإعجابات المستلمة: ${lv.likesReceived}</span>
+          <span>${lv.lvl < 5 ? `متبقي ${lv.remaining} نقطة للمستوى التالي` : 'أعلى رتبة أدبية في المنصة'}</span>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('sq-prof-bio').innerText = decodeEntities(d.bio || (isProfilePub ? `الصفحة الرسمية لـ ${getRealName(uid, d.displayName)} — تصفح أحدث الإصدارات والمؤلفين.` : `عضو في ${APP_NAME}.`));
+    document.getElementById('sq-prof-posts').innerText = userPosts.length;
+    document.getElementById('sq-prof-followers').innerText = window.sqGetFollowersList(uid).length;
+    document.getElementById('sq-prof-following').innerText = window.sqGetFollowingList(uid).length;
+    document.getElementById('sq-prof-views').innerText = lv.viewsReceived;
+
+    const visitorActions = document.getElementById('sq-prof-visitor-actions');
+    visitorActions.innerHTML = '';
+    if (AppState.currentUser && !isMe) {
+      const isFollowing = (AppState.userData.following || []).includes(uid);
+      const isBlocked = (AppState.userData.blockedUsers || []).includes(uid);
+
+      visitorActions.innerHTML = `
+        <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-bottom:8px;">
+          <button class="sq-btn ${isFollowing ? 'sq-btn-outline' : 'sq-btn-gold'}" style="min-width:155px;" onclick="window.sqToggleFollowUser('${uid}', null, event)">
+            <i class="fa-solid ${isFollowing ? 'fa-user-check' : 'fa-user-plus'}"></i> ${isFollowing ? 'متابَع' : 'متابعة الحساب'}
+          </button>
+          <button class="sq-btn sq-btn-outline" style="padding:7px 12px!important; color:var(--danger)!important;" onclick="window.sqToggleBlockUser('${uid}')" title="${isBlocked ? 'فك الحظر' : 'حظر'}">
+            <i class="fa-solid fa-ban"></i>
+          </button>
+        </div>
+      `;
+
+      // لوحة التحكم السريعة للإدارة داخل ملف العضو (توثيق الكاتب، ربطه بدور النشر، توثيق دار النشر، وصلاحيات الموظفين)
+      if (AppState.isAdmin) {
+        const userPerms = d.permissions || [];
+        const userLinkedPubs = Array.isArray(d.linkedPublishers) ? d.linkedPublishers : [];
+        const allPubsList = [{ uid: 'DAR_MAIN', name: APP_NAME }];
+        Object.keys(AppState.allUsers).forEach(k => {
+          if (AppState.allUsers[k] && AppState.allUsers[k].isPublisher && !ADMINS.includes(AppState.allUsers[k].email)) {
+            allPubsList.push({ uid: k, name: getRealName(k, AppState.allUsers[k].displayName) });
+          }
+        });
+
+        visitorActions.innerHTML += `
+          <div style="margin-top:10px; padding:13px; border:1.5px dashed var(--accent); background:var(--bg); border-radius:16px; text-align:right;">
+            <div style="font-size:12.5px; color:var(--text-main); font-weight:900; margin-bottom:8px;"><i class="fa-solid fa-shield-halved" style="color:var(--accent);"></i> لوحة الإدارة والتوثيق والترابط الشبكي:</div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;">
+              <button class="sq-btn" style="background:var(--author)!important; color:#fff!important; font-size:11px!important; padding:6px 11px!important;" onclick="window.sqToggleAuthor('${uid}', ${d.isAuthor || false})">
+                <i class="fa-solid fa-check-circle"></i> ${d.isAuthor ? 'سحب شارة الكاتب (الزرقاء)' : 'توثيق ككاتب (الشارة الزرقاء)'}
+              </button>
+              <button class="sq-btn sq-btn-gold" style="font-size:11px!important; padding:6px 11px!important;" onclick="window.sqTogglePublisher('${uid}', ${d.isPublisher || false})">
+                <i class="fa-solid fa-building-columns"></i> ${d.isPublisher ? 'سحب شارة دار النشر (الذهبية)' : 'منح صلاحية دار نشر (ذهبية)'}
+              </button>
+              <button class="sq-btn" style="background:var(--warning)!important; color:#fff!important; font-size:11px!important; padding:6px 11px!important;" onclick="window.sqToggleMute('${uid}', ${d.isMuted || false})">${d.isMuted ? 'فك التقييد' : 'تقييد النشر'}</button>
+              <button class="sq-btn" style="background:var(--danger)!important; color:#fff!important; font-size:11px!important; padding:6px 11px!important;" onclick="window.sqToggleBan('${uid}', ${d.isBanned || false})">${d.isBanned ? 'فك الحظر' : 'حظر الحساب'}</button>
+            </div>
+
+            <div style="font-size:11.5px; color:var(--text-main); font-weight:800; margin-bottom:5px;"><i class="fa-solid fa-diagram-project" style="color:var(--accent);"></i> ربط هذا الكاتب بدور النشر المعتمدة (يمكن ربطه بأكثر من دار):</div>
+            <div style="display:flex; gap:5px; flex-wrap:wrap; margin-bottom:10px;">
+              ${allPubsList.map(p => {
+                const isLinked = userLinkedPubs.includes(p.uid);
+                return `<button class="sq-btn ${isLinked ? 'sq-btn-gold' : 'sq-btn-outline'}" style="padding:4px 10px!important; font-size:10.5px!important;" onclick="window.sqToggleLinkAuthorToPublisher('${uid}', '${p.uid}')"><i class="fa-solid ${isLinked ? 'fa-link' : 'fa-plus'}"></i> ${escapeHtml(p.name)}</button>`;
+              }).join('')}
+            </div>
+
+            <div style="font-size:11.5px; color:var(--text-muted); font-weight:800; margin-bottom:5px;">منح صلاحيات موظف إداري لهذا الحساب:</div>
+            <div style="display:flex; gap:5px; flex-wrap:wrap;">
+              ${Object.keys(STAFF_PERMISSIONS_MAP).map(pk => {
+                const hasP = userPerms.includes(pk);
+                return `<button class="sq-btn ${hasP ? 'sq-btn-gold' : 'sq-btn-outline'}" style="padding:4px 9px!important; font-size:10.5px!important;" onclick="window.sqToggleStaffPermission('${uid}', '${pk}', ${hasP})"><i class="fa-solid ${hasP ? 'fa-check' : 'fa-plus'}"></i> ${STAFF_PERMISSIONS_MAP[pk].label}</button>`;
+              }).join('')}
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    // حساب التبويبات في الملف الشخصي (إصدارات الدار، كُتّاب الدار، مؤلفات الكاتب، المساهمات، مكتبتي)
+    const pubBooks = AppState.booksList.filter(b => isProfileAdmin ? (!b.publisherUid || b.publisherUid === 'DAR_MAIN' || b.publisherUid === uid) : (b.publisherUid === uid));
+    const authorBooks = AppState.booksList.filter(b => b.authorUid === uid);
+    const displayBooks = isProfilePub ? pubBooks : authorBooks;
+    const pubAuthors = isProfilePub ? window.sqGetPublisherAuthorsList(isProfileAdmin ? 'DAR_MAIN' : uid) : [];
+
+    const savedSet = new Set([...(d.savedBooks || []), ...Object.keys(d.readingShelf || {})]);
+    const myLibraryCount = AppState.booksList.filter(b => savedSet.has(b.id)).length;
+
+    const tabsBar = document.getElementById('sq-prof-tabs-bar');
+    let tabsHtml = '';
+    if (isProfilePub) {
+      tabsHtml += `<button class="sq-hub-tab ${AppState.activeProfileTab === 'books' ? 'active' : ''}" onclick="window.sqSwitchProfileTab('books')"><i class="fa-solid fa-book"></i> إصدارات الدار (${displayBooks.length})</button>`;
+      tabsHtml += `<button class="sq-hub-tab ${AppState.activeProfileTab === 'pub_authors' ? 'active' : ''}" onclick="window.sqSwitchProfileTab('pub_authors')"><i class="fa-solid fa-feather-pointed"></i> كُتّاب الدار (${pubAuthors.length})</button>`;
+      tabsHtml += `<button class="sq-hub-tab ${AppState.activeProfileTab === 'posts' ? 'active' : ''}" onclick="window.sqSwitchProfileTab('posts')"><i class="fa-solid fa-newspaper"></i> المنشورات (${userPosts.length})</button>`;
+      tabsHtml += `<button class="sq-hub-tab ${AppState.activeProfileTab === 'mylibrary' ? 'active' : ''}" onclick="window.sqSwitchProfileTab('mylibrary')"><i class="fa-solid fa-bookmark"></i> مكتبتي (${myLibraryCount})</button>`;
+    } else {
+      tabsHtml += `<button class="sq-hub-tab ${AppState.activeProfileTab === 'posts' ? 'active' : ''}" onclick="window.sqSwitchProfileTab('posts')"><i class="fa-solid fa-feather"></i> المساهمات (${userPosts.length})</button>`;
+      if (d.isAuthor || displayBooks.length > 0) {
+        tabsHtml += `<button class="sq-hub-tab ${AppState.activeProfileTab === 'books' ? 'active' : ''}" onclick="window.sqSwitchProfileTab('books')"><i class="fa-solid fa-book"></i> مؤلفاته (${displayBooks.length})</button>`;
+      }
+      tabsHtml += `<button class="sq-hub-tab ${AppState.activeProfileTab === 'mylibrary' ? 'active' : ''}" onclick="window.sqSwitchProfileTab('mylibrary')"><i class="fa-solid fa-bookmark"></i> مكتبتي (${myLibraryCount})</button>`;
+    }
+    tabsBar.innerHTML = tabsHtml;
+    window.sqRenderProfileTabContent();
+  });
+};
+
+window.sqRenderProfileTabContent = function() {
+  const uid = AppState.viewedProfileUid;
+  const isMe = AppState.currentUser && AppState.currentUser.uid === uid;
+  const contentBox = document.getElementById('sq-prof-tab-content'); if (!contentBox) return;
+  document.querySelectorAll('#sq-prof-tabs-bar .sq-hub-tab').forEach(b => b.classList.remove('active'));
+  document.querySelector(`#sq-prof-tabs-bar .sq-hub-tab[onclick*="${AppState.activeProfileTab}"]`)?.classList.add('active');
+
+  const u = AppState.allUsers[uid] || {};
+  const isProfileAdmin = Boolean(u.isAdminUser || ADMINS.includes(u.email));
+  const isProfilePub = Boolean(u.isPublisher || isProfileAdmin);
+
+  if (AppState.activeProfileTab === 'posts') {
+    const userPosts = AppState.posts.filter(p => p.uid === uid && (!p.isAnon || AppState.isAdmin || isMe));
+    if (!userPosts.length) {
+      contentBox.innerHTML = `<div class="sq-hub-card" style="text-align:center; padding:30px; color:var(--text-muted);">لا توجد مساهمات منشورة بعد.</div>`;
+      return;
+    }
+    contentBox.innerHTML = userPosts.map(p => window.sqBuildSinglePostHTML(p, false)).join('');
+  }
+  else if (AppState.activeProfileTab === 'mylibrary') {
+    const shelfMap = u.readingShelf || {};
+    const savedSet = new Set([...(u.savedBooks || []), ...Object.keys(shelfMap)]);
+    const myLibBooks = AppState.booksList.filter(b => savedSet.has(b.id));
+    if (!myLibBooks.length) {
+      contentBox.innerHTML = `
+        <div class="sq-hub-card" style="text-align:center; padding:35px 20px; color:var(--text-muted);">
+          <i class="fa-solid fa-bookmark fa-2x" style="color:var(--accent); opacity:0.45; margin-bottom:10px;"></i><br>
+          <strong>المكتبة المحفوظة فارغة حالياً.</strong>
+          <p style="font-size:12px; margin-top:4px;">اضغط على زر (حفظ إلى مكتبتي) أو (أقرؤه حالياً / قرأته) داخل صفحة أي كتاب ليظهر هنا.</p>
+        </div>
+      `;
+      return;
+    }
+    const statusLabels = { reading: 'يقرؤه حالياً', read: 'أتم قراءته', want: 'محفوظ للقراءة' };
+    contentBox.innerHTML = `<div class="sq-books-grid">` + myLibBooks.map(b => {
+      const badgeTxt = shelfMap[b.id] ? statusLabels[shelfMap[b.id]] : 'في مكتبتي';
+      const st = window.sqGetBookStats(b);
+      return `
+        <div class="sq-lib-book-card" onclick="window.sqOpenBookDetail('${b.id}')">
+          <div>
+            <div class="sq-lib-cover-wrap">
+              <span class="sq-lib-badge-top"><i class="fa-solid fa-bookmark"></i> ${badgeTxt}</span>
+              <img src="${escapeHtml(b.cover || APP_LOGO_URL)}" loading="lazy">
+              <span class="sq-lib-rating-pill"><i class="fa-solid fa-star" style="color:#fbbf24;"></i> ${st.avgRating}</span>
+            </div>
+            <div class="sq-lib-book-title">${escapeHtml(b.title)}</div>
+            <div class="sq-lib-book-author"><i class="fa-solid fa-feather" style="color:var(--accent); font-size:10px;"></i> <span>${escapeHtml(b.authorName || '')}</span></div>
+          </div>
+        </div>
+      `;
+    }).join('') + `</div>`;
+  }
+  else if (AppState.activeProfileTab === 'books') {
+    const targetBooks = isProfilePub
+      ? AppState.booksList.filter(b => isProfileAdmin ? (!b.publisherUid || b.publisherUid === 'DAR_MAIN' || b.publisherUid === uid) : (b.publisherUid === uid))
+      : AppState.booksList.filter(b => b.authorUid === uid);
+
+    if (!targetBooks.length) {
+      contentBox.innerHTML = `
+        <div class="sq-hub-card" style="text-align:center; padding:35px 20px; color:var(--text-muted);">
+          <i class="fa-solid fa-book-open fa-2x" style="color:var(--accent); opacity:0.45; margin-bottom:10px;"></i><br>
+          <strong>لم يتم رفع إصدارات في هذا القسم بعد.</strong>
+          ${(isMe && window.sqHasPermission('manage_books')) || AppState.isAdmin ? `<br><button class="sq-btn sq-btn-gold" style="margin-top:12px;" onclick="window.sqOpenBookStudio(null)"><i class="fa-solid fa-plus"></i> رفع كتاب جديد الآن</button>` : ''}
+        </div>
+      `;
+      return;
+    }
+    contentBox.innerHTML = `<div class="sq-books-grid">` + targetBooks.map(book => window.sqBuildBookCardHTML(book)).join('') + `</div>`;
+  }
+  else if (AppState.activeProfileTab === 'pub_authors') {
+    const pubKey = isProfileAdmin ? 'DAR_MAIN' : uid;
+    const authorUids = window.sqGetPublisherAuthorsList(pubKey);
+    if (!authorUids.length) {
+      contentBox.innerHTML = `
+        <div class="sq-hub-card" style="text-align:center; padding:35px 20px; color:var(--text-muted);">
+          <i class="fa-solid fa-users fa-2x" style="color:var(--accent); opacity:0.45; margin-bottom:10px;"></i><br>
+          <strong>لم يتم ربط كُتّاب ومؤلفين بهذه الدار بعد.</strong>
+          <p style="font-size:12px; margin-top:4px;">عند رفع كتاب وربطه بحساب الكاتب، أو ربط الكاتب بالدار، سيظهر هنا تلقائياً.</p>
+        </div>
+      `;
+      return;
+    }
+    contentBox.innerHTML = `<div class="sq-hub-card" style="display:flex; flex-direction:column; gap:8px;">` + authorUids.map(aUid => {
+      const au = AppState.allUsers[aUid] || {};
+      const aName = escapeHtml(getRealName(aUid, au.displayName));
+      const aPhoto = getRealPhoto(aUid, au.photoURL);
+      const aBooksCount = AppState.booksList.filter(b => b.authorUid === aUid).length;
+      return `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:11px 14px; background:var(--bg); border:1px solid var(--border); border-radius:14px; cursor:pointer;" onclick="window.sqViewProfile('${aUid}', 'books')">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <img src="${aPhoto}" style="width:42px; height:42px; border-radius:50%; object-fit:cover; border:2px solid var(--author);">
+            <div>
+              <div style="font-weight:900; font-size:14px; color:var(--text-main);">${aName} ${window.getUserBadges(aUid, false, false, true)}</div>
+              <div style="font-size:11.5px; color:var(--text-muted);"><i class="fa-solid fa-book" style="color:var(--accent);"></i> ${aBooksCount} مؤلفات في المتجر</div>
+            </div>
+          </div>
+          <span class="sq-btn sq-btn-outline" style="padding:5px 12px!important; font-size:11.5px!important;">مؤلفاته <i class="fa-solid fa-chevron-left"></i></span>
+        </div>
+      `;
+    }).join('') + `</div>`;
+  }
+};
+
+// =========================================================
+// 📜 الصفحات الرسمية والخصوصية وشروط الاستخدام (مع موافقة الدخول الأول)
+// =========================================================
+window.sqOpenLegalPage = function(tabName = 'about', isMandatoryFirstTime = false) {
+  AppState.activeLegalPage = tabName;
+  window.sqSwitchMainView('legal_page');
+  const topbar = document.getElementById('sq-legal-topbar');
+  if (topbar) topbar.style.display = isMandatoryFirstTime ? 'none' : 'flex';
+  window.sqSwitchLegalTab(tabName, isMandatoryFirstTime);
+};
+
+window.sqSwitchLegalTab = function(tabName, isMandatory = false) {
+  AppState.activeLegalPage = tabName;
+  document.querySelectorAll('#sq-legal-tabs .sq-hub-tab').forEach(b => b.classList.remove('active'));
+  document.getElementById('legtab-' + tabName)?.classList.add('active');
+
+  const box = document.getElementById('sq-legal-content-box');
+  const actionsBox = document.getElementById('sq-legal-actions-box');
+  if (!box || !actionsBox) return;
+
+  if (tabName === 'about') {
+    window.sqUpdateDynamicSEO('ماذا تعرف عن صفقات كتابية', `تعرف على رسالة ورؤية ${APP_NAME} للكتاب والأدب العربي`, APP_LOGO_URL, false);
+    box.innerHTML = `
+      <h3><i class="fa-solid fa-building-columns" style="color:var(--accent);"></i> ماذا تعرف عن ${escapeHtml(APP_NAME)}؟</h3>
+      <p><strong>${escapeHtml(APP_NAME)}</strong> هي منصة أدبية وثقافية متكاملة ومتجر رسمي للإصدارات والكتب ودور النشر العربية، تجمع بين متعة اقتناء الكتاب الورقي والرقمي وبين فضاء النقاش الأدبي الراقي.</p>
+      <h3><i class="fa-solid fa-compass" style="color:var(--accent);"></i> رؤيتنا ورسالتنا</h3>
+      <ul>
+        <li>تمكين الكاتب العربي ودور النشر من إبراز المؤلفات والإصدارات وتوثيق حضورهم الأدبي في شبكة مترابطة واحدة.</li>
+        <li>توفير تجربة تسوق وتحميل كتب سلسة ومباشرة عبر الفواتير الفورية الموثقة (SK) والتواصل المباشر مع دور النشر.</li>
+        <li>بناء مجتمع قرائي حيوي يثري المحتوى العربي بالاقتباسات الموثقة والمراجعات النقدية البناءة.</li>
+      </ul>
+    `;
+  } else if (tabName === 'privacy') {
+    window.sqUpdateDynamicSEO('سياسة الخصوصية وحماية البيانات', `سياسة الخصوصية وحماية بيانات الأعضاء والمشترين في ${APP_NAME}`, APP_LOGO_URL, false);
+    box.innerHTML = `
+      <h3><i class="fa-solid fa-user-shield" style="color:var(--accent);"></i> سياسة الخصوصية وحماية البيانات</h3>
+      <p>نولي في <strong>${escapeHtml(APP_NAME)}</strong> أقصى درجات العناية لحماية خصوصية القراء والكُتّاب والمشترين وفق المعايير التالية:</p>
+      <ul>
+        <li><strong>بيانات الحساب:</strong> يتم التسجيل بأمان عبر مصادقة Google الرسمية، ولا تطلع المنصة على كلمات المرور الخاصة بك مطلقاً.</li>
+        <li><strong>بيانات الفواتير والشحن:</strong> الأسماء وأرقام الهواتف والعناوين المدخلة في فواتير الشراء تُحفظ بشكل آمن ومحصور بقسم المبيعات ودار النشر المعنية لتوصيل طلبك.</li>
+        <li><strong>محرك التوصيات الذكي:</strong> يعمل محرك التوصيات في الخلفية لتحسين اقتراحات الكتب المناسبة لذائقتك الأدبية دون مشاركة بياناتك مع أي طرف خارجي.</li>
+      </ul>
+    `;
+  } else {
+    window.sqUpdateDynamicSEO('شروط الاستخدام وميثاق المجتمع', `شروط الاستخدام وميثاق النشر الأدبي في ${APP_NAME}`, APP_LOGO_URL, false);
+    box.innerHTML = `
+      <h3><i class="fa-solid fa-file-contract" style="color:var(--accent);"></i> شروط الاستخدام وميثاق ${escapeHtml(APP_NAME)}</h3>
+      <p>انضمامك واستخدامك لمنصة ومتجر <strong>${escapeHtml(APP_NAME)}</strong> يعني التزامك الكامل بالمبادئ التالية:</p>
+      <ul>
+        <li><strong>الاحترام المتبادل:</strong> يُمنع منعاً باتاً التجريح الشخصي أو الإساءة لأي كاتب أو قارئ أو دار نشر؛ النقد الأدبي يكون موضوعياً وبناءً.</li>
+        <li><strong>الأمانة الأدبية وحقوق الملكية:</strong> يُرجى نسبة الاقتباسات والنصوص إلى أصحابها ومؤلفيها الأصليين، ويُحظر انتحال المؤلفات.</li>
+        <li><strong>جدية الطلبات والفواتير:</strong> إصدار الفاتورة عبر المتجر يُعد طلباً رسمياً يُستكمل تأكيده عبر واتساب الدار أو دار النشر المعنية.</li>
+        <li><strong>صلاحيات الرقابة والإدارة:</strong> تحتفظ إدارة المنصة بحقها الكامل في حذف أي محتوى مخالف أو تقييد وحظر أي حساب ينتهك هذا الميثاق.</li>
+      </ul>
+    `;
+  }
+
+  const needsMandatoryAgree = isMandatory || (AppState.currentUser && !AppState.userData.agreedToTerms && !AppState.isAdmin);
+  if (needsMandatoryAgree) {
+    actionsBox.innerHTML = `
+      <div style="background:var(--accent-soft); border:1px solid var(--accent-border); padding:10px 14px; border-radius:12px; font-size:12.5px; font-weight:800; color:var(--text-main); text-align:center;">
+        <i class="fa-solid fa-circle-info" style="color:var(--accent);"></i> مرحباً بك في ${escapeHtml(APP_NAME)}! للمتابعة واستخدام المنصة، يُرجى الموافقة على سياسة الخصوصية وشروط الاستخدام:
+      </div>
+      <button class="sq-btn sq-btn-gold" style="width:100%; padding:12px!important; font-size:14px!important;" onclick="window.sqAgreeToTerms()">
+        <i class="fa-solid fa-circle-check"></i> قرأت وأوافق على سياسة الخصوصية وشروط الاستخدام
+      </button>
+      ${AppState.currentUser ? `<button class="sq-btn sq-btn-outline" style="width:100%;" onclick="window.sqLogout()"><i class="fa-solid fa-arrow-right-from-bracket"></i> تسجيل الخروج</button>` : ''}
+    `;
+  } else {
+    actionsBox.innerHTML = `<button class="sq-btn" style="width:100%;" onclick="window.sqGoBackView()"><i class="fa-solid fa-check"></i> إغلاق والعودة</button>`;
+  }
+};
+
+window.sqAgreeToTerms = function() {
+  localStorage.setItem('sq_guest_agreed_v18', '1');
+  if (!AppState.currentUser) {
+    window.sqSwitchMainView('store');
+    sqShowToast(`أهلاً بك في ${APP_NAME}!`, "success");
+    return;
+  }
+  db.collection("safaqat_users").doc(AppState.currentUser.uid).update({ agreedToTerms: true }).then(() => {
+    AppState.userData.agreedToTerms = true;
+    window.sqSwitchMainView('store');
+    sqShowToast(`أهلاً بك في ${APP_NAME}!`, "success");
+  });
+};
+
+// =========================================================
+// ⚙️ مركز الإعدادات، التثبيت المباشر للتطبيق، الإشعارات، والدعم
+// =========================================================
+window.sqListenNotifs = function() {
+  if (AppState.notifUnsubscribe) AppState.notifUnsubscribe();
+  AppState.notifUnsubscribe = db.collection("safaqat_notifications").where("toUid", "==", AppState.currentUser.uid).onSnapshot(snap => {
+    AppState.notificationsList = [];
+    snap.forEach(doc => AppState.notificationsList.push({ id: doc.id, ...doc.data() }));
+    AppState.notificationsList.sort((a, b) => (b.time || 0) - (a.time || 0));
+    AppState.notificationsList = AppState.notificationsList.slice(0, 30);
+    window.sqUpdateBadgesUI();
+  }, err => {});
+};
+
+window.sqListenTickets = function() {
+  if (!AppState.currentUser) return;
+  if (AppState.ticketsUnsubscribe) AppState.ticketsUnsubscribe();
+  const canManageSupport = window.sqHasPermission('manage_support');
+  const ref = canManageSupport
+    ? db.collection("safaqat_tickets")
+    : db.collection("safaqat_tickets").where("uid", "==", AppState.currentUser.uid);
+
+  AppState.ticketsUnsubscribe = ref.onSnapshot(snap => {
+    AppState.ticketsList = [];
+    snap.forEach(doc => AppState.ticketsList.push({ id: doc.id, ...doc.data() }));
+    AppState.ticketsList.sort((a, b) => (b.time || 0) - (a.time || 0));
+    if (AppState.activeMainView === 'settings_page' && (AppState.settingsSubTab === 'support' || AppState.settingsSubTab === 'admin')) {
+      window.sqRenderSettingsPage();
+    }
+  }, err => {});
+};
+
+window.sqUpdateBadgesUI = function() {
+  if (!AppState.currentUser) return;
+  const unreadNotifs = AppState.notificationsList.filter(n => !n.read).length;
+  const dockProfileDot = document.getElementById('dock-profile-dot');
+  if (dockProfileDot) {
+    if (unreadNotifs > 0) { dockProfileDot.innerText = unreadNotifs; dockProfileDot.style.display = 'flex'; }
+    else { dockProfileDot.style.display = 'none'; }
+  }
+};
+
+window.sqSendNotif = function(toUid, postId, text) {
+  if (!toUid) return;
+  db.collection("safaqat_notifications").add({ toUid, postId, text, read: false, time: Date.now() });
+};
+
+window.sqOpenSettingsPage = function(defaultSubTab = 'identity') {
+  if (!AppState.currentUser) return window.sqLogin();
+  AppState.settingsSubTab = defaultSubTab;
+  window.sqSwitchMainView('settings_page');
+  window.sqRenderSettingsPage();
+};
+
+window.sqSwitchSettingsTab = function(tabName) {
+  AppState.settingsSubTab = tabName;
+  window.sqRenderSettingsPage();
+};
+
+window.sqRenderSettingsPage = function() {
+  const navTabs = document.getElementById('sq-settings-nav-tabs');
+  const bodyBox = document.getElementById('sq-settings-body-content');
+  if (!navTabs || !bodyBox || !AppState.currentUser) return;
+
+  const canSeeAdmin = AppState.isAdmin || window.sqIsStaffMember();
+  const unreadCount = AppState.notificationsList.filter(n => !n.read).length;
+
+  navTabs.innerHTML = `
+    <button class="sq-hub-tab ${AppState.settingsSubTab === 'identity' ? 'active' : ''}" onclick="window.sqSwitchSettingsTab('identity')"><i class="fa-solid fa-sliders"></i> الإعدادات والمظهر</button>
+    <button class="sq-hub-tab ${AppState.settingsSubTab === 'notifs' ? 'active' : ''}" onclick="window.sqSwitchSettingsTab('notifs')"><i class="fa-regular fa-bell"></i> الإشعارات ${unreadCount > 0 ? `<span style="background:var(--danger); color:#fff; padding:1px 6px; border-radius:10px; font-size:10px;">${unreadCount}</span>` : ''}</button>
+    <button class="sq-hub-tab ${AppState.settingsSubTab === 'support' ? 'active' : ''}" onclick="window.sqSwitchSettingsTab('support')"><i class="fa-solid fa-headset"></i> الدعم</button>
+    ${canSeeAdmin ? `<button class="sq-hub-tab ${AppState.settingsSubTab === 'admin' ? 'active' : ''}" style="color:var(--danger);" onclick="window.sqSwitchSettingsTab('admin')"><i class="fa-solid fa-shield-halved"></i> ${AppState.userData.isPublisher && !AppState.isAdmin ? 'إدارة الدار والمبيعات' : 'الإدارة والقيادة'}</button>` : ''}
+  `;
+
+  const u = AppState.userData;
+  if (AppState.settingsSubTab === 'identity') {
+    const curFont = u.fontSize || '16.5px';
+    const curTheme = u.theme || localStorage.getItem('sq_theme_pref') || 'light';
+    const countryOptions = Object.keys(COUNTRIES_MAP).map(code => `<option value="${code}" ${u.nationality === code ? 'selected' : ''}>${COUNTRIES_MAP[code].name}</option>`).join('');
+
+    bodyBox.innerHTML = `
+      <div class="sq-hub-card">
+        <!-- بطاقة التثبيت الفوري لتطبيق الويب (PWA) -->
+        <div style="background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%); color:#fff; border:1.5px solid var(--accent); border-radius:16px; padding:14px; margin-bottom:16px; display:flex; justify-content:space-between; align-items:center; gap:10px;">
+          <div>
+            <div style="font-weight:900; font-size:14px; color:#fbbf24;"><i class="fa-solid fa-mobile-screen-button"></i> تطبيق ${escapeHtml(APP_NAME)} للهاتف</div>
+            <div style="font-size:11.5px; color:#cbd5e1; margin-top:2px;">ثبّت المنصة كتطبيق ويب مستقل على جهازك بضغطة واحدة</div>
+          </div>
+          <button class="sq-btn sq-btn-gold" style="padding:7px 14px!important; font-size:12px!important; flex-shrink:0;" onclick="window.sqTriggerPwaInstall()">
+            <i class="fa-solid fa-download"></i> تثبيت التطبيق
+          </button>
+        </div>
+
+        <h3 style="font-size:15.5px; margin-bottom:10px;"><i class="fa-solid fa-palette" style="color:var(--accent);"></i> المظهر (نهاري / ليلي / تلقائي) وحجم الخط</h3>
+        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:12px;">
+          <button class="sq-btn ${curTheme === 'light' ? 'sq-btn-gold' : 'sq-btn-outline'}" onclick="window.sqSetThemeMode('light')"><i class="fa-solid fa-sun"></i> نهاري</button>
+          <button class="sq-btn ${curTheme === 'dark' ? 'sq-btn-gold' : 'sq-btn-outline'}" onclick="window.sqSetThemeMode('dark')"><i class="fa-solid fa-moon"></i> ليلي</button>
+          <button class="sq-btn ${curTheme === 'auto' ? 'sq-btn-gold' : 'sq-btn-outline'}" onclick="window.sqSetThemeMode('auto')"><i class="fa-solid fa-circle-half-stroke"></i> تلقائي</button>
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:18px;">
+          <button class="sq-btn ${curFont === '15px' ? 'sq-btn-gold' : 'sq-btn-outline'}" onclick="window.sqSetFontSize('15px')"><i class="fa-solid fa-font"></i> خط صغير</button>
+          <button class="sq-btn ${curFont === '16.5px' ? 'sq-btn-gold' : 'sq-btn-outline'}" onclick="window.sqSetFontSize('16.5px')"><i class="fa-solid fa-text-height"></i> خط متوسط</button>
+          <button class="sq-btn ${curFont === '18.5px' ? 'sq-btn-gold' : 'sq-btn-outline'}" onclick="window.sqSetFontSize('18.5px')"><i class="fa-solid fa-heading"></i> خط كبير</button>
+        </div>
+
+        <h3 style="font-size:15.5px; margin-bottom:10px; border-top:1px solid var(--border); padding-top:14px;"><i class="fa-solid fa-id-card" style="color:var(--accent);"></i> الهوية والبيانات الرسمية</h3>
+        <label class="sq-field-label"><i class="fa-solid fa-signature"></i> الاسم الظاهر للجميع (اسم الكاتب / القارئ / دار النشر):</label>
+        <input type="text" id="sq-edit-name" class="sq-input" value="${escapeHtml(u.customName || u.displayName || '')}">
+
+        ${(u.isPublisher || AppState.isAdmin) ? `
+          <div style="background:var(--accent-soft); border:1.5px solid var(--accent); padding:12px; border-radius:14px; margin-bottom:12px;">
+            <label class="sq-field-label" style="color:var(--text-main);"><i class="fa-brands fa-whatsapp" style="color:#25D366; font-size:15px;"></i> رقم واتساب دار النشر لاستقبال الفواتير والطلبات (مع رمز الدولة):</label>
+            <input type="tel" id="sq-edit-pub-wa" class="sq-input" style="margin-bottom:4px!important; background:var(--card)!important;" value="${escapeHtml(u.publisherWhatsapp || '')}" placeholder="مثال: +9665XXXXXXXX أو +201XXXXXXXXX">
+            <div style="font-size:11px; color:var(--text-muted);">عندما يطلب القارئ كتاباً تابعاً لداركم، ستُوجه الفاتورة تلقائياً إلى هذا الرقم.</div>
+          </div>
+        ` : ''}
+
+        <label class="sq-field-label"><i class="fa-solid fa-quote-right"></i> الحالة القصيرة (تظهر بجانب اسمك):</label>
+        <input type="text" id="sq-edit-status" class="sq-input" value="${escapeHtml(u.statusText || '')}" placeholder="مثال: كاتب وروائي في صفقات...">
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+          <div>
+            <label class="sq-field-label"><i class="fa-solid fa-earth-americas"></i> الدولة / المقر:</label>
+            <select id="sq-edit-nationality" class="sq-select">${countryOptions}</select>
+          </div>
+          <div>
+            <label class="sq-field-label"><i class="fa-regular fa-calendar"></i> تاريخ الميلاد / التأسيس:</label>
+            <input type="date" id="sq-edit-birthday" class="sq-input" value="${escapeHtml(u.birthday || '')}">
+          </div>
+        </div>
+        <label class="sq-field-label"><i class="fa-solid fa-align-right"></i> النبذة التعريفية (Bio):</label>
+        <textarea id="sq-edit-bio" class="sq-input" style="min-height:80px; resize:none;">${escapeHtml(u.bio || '')}</textarea>
+        <div style="margin-bottom:14px; background:var(--bg); padding:11px 14px; border-radius:14px; border:1px solid var(--border);">
+          <label style="display:flex; align-items:center; justify-content:space-between; font-size:13px; font-weight:bold; cursor:pointer;"><span>إظهار حالة الاتصال (متصل الآن)</span><input type="checkbox" id="sq-edit-show-online" ${u.showOnline !== false ? 'checked' : ''} style="width:18px; height:18px;"></label>
+        </div>
+        <button class="sq-btn sq-btn-gold" style="width:100%; margin-bottom:18px;" onclick="window.sqSaveProfileSettings()"><i class="fa-solid fa-floppy-disk"></i> حفظ بيانات الهوية</button>
+
+        <h3 style="font-size:15.5px; margin-bottom:10px; border-top:1px solid var(--border); padding-top:14px;"><i class="fa-solid fa-scale-balanced" style="color:var(--accent);"></i> الصفحات الرسمية والسياسات</h3>
+        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:14px;">
+          <button class="sq-btn sq-btn-outline" style="font-size:11.5px!important; padding:8px!important;" onclick="window.sqOpenLegalPage('about', false)"><i class="fa-solid fa-building-columns"></i> عن صفقات</button>
+          <button class="sq-btn sq-btn-outline" style="font-size:11.5px!important; padding:8px!important;" onclick="window.sqOpenLegalPage('privacy', false)"><i class="fa-solid fa-user-shield"></i> الخصوصية</button>
+          <button class="sq-btn sq-btn-outline" style="font-size:11.5px!important; padding:8px!important;" onclick="window.sqOpenLegalPage('terms', false)"><i class="fa-solid fa-file-contract"></i> الشروط</button>
+        </div>
+        <button class="sq-btn" style="width:100%; background:var(--danger)!important;" onclick="window.sqLogout()"><i class="fa-solid fa-arrow-right-from-bracket"></i> تسجيل الخروج من الحساب</button>
+      </div>
+    `;
+  } else if (AppState.settingsSubTab === 'notifs') {
+    AppState.notificationsList.forEach(n => {
+      if (!n.read) {
+        n.read = true;
+        db.collection("safaqat_notifications").doc(n.id).update({ read: true }).catch(() => {});
+      }
+    });
+    window.sqUpdateBadgesUI();
+
+    const notifsHtml = AppState.notificationsList.length ? AppState.notificationsList.map(n => `
+      <div onclick="window.sqHandleNotifClick('${n.postId || ''}')" style="padding:11px 13px; border-radius:12px; background:var(--bg); border:1px solid var(--border); font-size:13px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">
+        <div><i class="fa-solid fa-bell" style="color:var(--accent); margin-left:6px;"></i> ${escapeHtml(n.text)}</div>
+        <span style="font-size:10px; color:var(--text-muted); flex-shrink:0;">${sqFormatRelativeTime(n.time)}</span>
+      </div>
+    `).join('') : `<p style="text-align:center; padding:25px; color:var(--text-muted);">لا توجد إشعارات جديدة حالياً.</p>`;
+
+    bodyBox.innerHTML = `
+      <div class="sq-hub-card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h3 style="font-size:16px; font-weight:900;"><i class="fa-regular fa-bell" style="color:var(--accent);"></i> سجل الإشعارات والتنبيهات</h3>
+          ${AppState.notificationsList.length ? `<button class="sq-btn sq-btn-outline" style="font-size:11px!important; padding:4px 10px!important;" onclick="window.sqClearAllNotifs()"><i class="fa-solid fa-trash"></i> مسح الكل</button>` : ''}
+        </div>
+        <div>${notifsHtml}</div>
+      </div>
+    `;
+  } else if (AppState.settingsSubTab === 'support') {
+    const myTickets = AppState.ticketsList.filter(t => t.uid === AppState.currentUser.uid);
+    const ticketsHtml = myTickets.map(t => `
+      <div style="background:var(--bg); border:1px solid var(--border); border-radius:14px; padding:12px; margin-top:10px;">
+        <div style="display:flex; justify-content:space-between; font-size:11.5px; font-weight:bold; margin-bottom:5px;">
+          <span style="color:var(--accent);">${escapeHtml(t.subject || 'تذكرة دعم')}</span>
+          <span style="color:${t.reply ? 'var(--success)' : 'var(--warning)'};"><i class="fa-solid ${t.reply ? 'fa-circle-check' : 'fa-clock'}"></i> ${t.reply ? 'تم الرد' : 'قيد المراجعة'}</span>
+        </div>
+        <p style="font-size:13px; margin-bottom:6px;">${escapeHtml(t.message)}</p>
+        ${t.reply ? `<div style="background:var(--card); border-right:3px solid var(--success); padding:8px 10px; border-radius:8px; font-size:12.5px;"><strong>رد إدارة المنصة:</strong> ${escapeHtml(t.reply)}</div>` : ''}
+      </div>
+    `).join('');
+
+    bodyBox.innerHTML = `
+      <div class="sq-hub-card">
+        <h3 style="font-size:16px; margin-bottom:8px;"><i class="fa-solid fa-headset" style="color:var(--accent);"></i> التواصل مع إدارة المنصة والدعم الفني</h3>
+        <select id="sq-ticket-subj" class="sq-select">
+          <option value="استفسار عن كتاب أو فاتورة شراء">استفسار عن كتاب أو فاتورة شراء</option>
+          <option value="طلب اعتماد دار نشر أو توثيق حساب كاتب">طلب اعتماد دار نشر أو توثيق حساب كاتب</option>
+          <option value="اقتراح تطويري للمنصة">اقتراح تطويري للمنصة</option>
+          <option value="مشكلة تقنية أو بلاغ">مشكلة تقنية أو بلاغ</option>
+        </select>
+        <textarea id="sq-ticket-msg" class="sq-input" style="min-height:90px; resize:none;" placeholder="اكتب رسالتك أو استفسارك بالتفصيل..."></textarea>
+        <button class="sq-btn sq-btn-gold" style="width:100%;" onclick="window.sqSubmitSupportTicket()"><i class="fa-solid fa-paper-plane"></i> إرسال التذكرة للإدارة</button>
+        <div style="margin-top:14px;">${ticketsHtml}</div>
+      </div>
+    `;
+  } else if (AppState.settingsSubTab === 'admin' && canSeeAdmin) {
+    window.sqRenderAdminDashboard();
+  }
+};
+
+window.sqSaveProfileSettings = function() {
+  if (!AppState.currentUser) return;
+  const payload = {
+    customName: document.getElementById('sq-edit-name').value.trim(),
+    statusText: document.getElementById('sq-edit-status').value.trim(),
+    nationality: document.getElementById('sq-edit-nationality').value,
+    birthday: document.getElementById('sq-edit-birthday').value,
+    bio: document.getElementById('sq-edit-bio').value.trim(),
+    showOnline: Boolean(document.getElementById('sq-edit-show-online')?.checked)
+  };
+  const pubWaEl = document.getElementById('sq-edit-pub-wa');
+  if (pubWaEl) payload.publisherWhatsapp = pubWaEl.value.trim();
+
+  db.collection("safaqat_users").doc(AppState.currentUser.uid).update(payload).then(() => {
+    Object.assign(AppState.userData, payload);
+    if (AppState.allUsers[AppState.currentUser.uid]) Object.assign(AppState.allUsers[AppState.currentUser.uid], payload);
+    sqShowToast("تم حفظ بيانات الهوية والإعدادات بنجاح!", "success");
+    window.sqViewProfile(AppState.currentUser.uid);
+  });
+};
+
+window.sqSubmitSupportTicket = function() {
+  if (!AppState.currentUser) return;
+  const subj = document.getElementById('sq-ticket-subj').value;
+  const msg = document.getElementById('sq-ticket-msg').value.trim();
+  if (!msg) return sqShowToast("اكتب رسالتك أولاً", "warning");
+  db.collection("safaqat_tickets").add({
+    uid: AppState.currentUser.uid,
+    authorName: getRealName(AppState.currentUser.uid, AppState.currentUser.displayName),
+    subject: subj,
+    message: msg,
+    reply: '',
+    time: Date.now()
+  }).then(() => {
+    document.getElementById('sq-ticket-msg').value = '';
+    sqShowToast("تم إرسال تذكرتك لإدارة المنصة بنجاح!", "success");
+  });
+};
+
+window.sqClearAllNotifs = function() {
+  if (!AppState.currentUser || !AppState.notificationsList.length) return;
+  AppState.notificationsList.forEach(n => db.collection("safaqat_notifications").doc(n.id).delete());
+  AppState.notificationsList = [];
+  window.sqRenderSettingsPage();
+  sqShowToast("تم مسح الإشعارات", "success");
+};
+
+window.sqHandleNotifClick = function(targetId) {
+  if (!targetId || targetId === 'null') return;
+  window.sqOpenSinglePost(targetId);
+};
+
+// =========================================================
+// 🛡️ غرفة قيادة الإدارة ودور النشر والموظفين + دليل التعليمات الشامل
+// =========================================================
+window.sqApplyDynamicDarSettings = function(data) {
+  if (!data) return;
+  if (data.appName && data.appName.trim().length >= 2) {
+    APP_NAME = data.appName.trim();
+    document.querySelectorAll('.sq-dyn-app-name').forEach(el => el.textContent = APP_NAME);
+  }
+  if (data.logoUrl && data.logoUrl.startsWith('http')) {
+    APP_LOGO_URL = data.logoUrl.trim();
+    const hLogo = document.getElementById('sq-header-logo-img'); if (hLogo) hLogo.src = APP_LOGO_URL;
+    const fav = document.getElementById('sq-favicon-link'); if (fav) fav.href = APP_LOGO_URL;
+    const appIc = document.getElementById('sq-apple-icon-link'); if (appIc) appIc.href = APP_LOGO_URL;
+    window.sqRefreshPwaManifest();
+  }
+  if (data.whatsappNumber && data.whatsappNumber.trim().length >= 7) {
+    DAR_WHATSAPP_NUMBER = data.whatsappNumber.trim();
+  }
+  if (data.defaultCurrency && data.defaultCurrency.trim().length >= 1) {
+    DEFAULT_CURRENCY = data.defaultCurrency.trim();
+  }
+  if (data.customBookCategories && typeof data.customBookCategories === 'object') {
+    AppState.customBookCategories = data.customBookCategories;
+    if (AppState.activeMainView === 'store') window.sqRenderLibrarySection();
+  }
+};
+
+window.sqRenderAdminDashboard = function() {
+  const box = document.getElementById('sq-settings-body-content'); if (!box) return;
+  const isPubOnly = Boolean(AppState.userData && AppState.userData.isPublisher && !AppState.isAdmin);
+  const myUid = AppState.currentUser ? AppState.currentUser.uid : '';
+
+  const totalUsers = Object.keys(AppState.allUsers).length;
+  const totalBooks = isPubOnly ? AppState.booksList.filter(b => b.publisherUid === myUid).length : AppState.booksList.length;
+  const totalOrders = isPubOnly ? AppState.ordersList.filter(o => (o.publisherUids || []).includes(myUid)).length : AppState.ordersList.length;
+  const totalEvents = AppState.eventsList.length;
+
+  const canManageOrders = window.sqHasPermission('manage_orders');
+  const canManageBooks = window.sqHasPermission('manage_books');
+  const canManageMod = window.sqHasPermission('manage_mod');
+  const canManageSupport = window.sqHasPermission('manage_support');
+  const canManageAds = window.sqHasPermission('manage_ads');
+
+  box.innerHTML = `
+    <div class="sq-hub-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+        <h3 style="font-size:16.5px; color:var(--text-main);">
+          <i class="fa-solid fa-shield-halved" style="color:var(--accent);"></i>
+          ${isPubOnly ? 'لوحة إدارة دار النشر والمبيعات' : 'غرفة القيادة والعمليات الإدارية'}
+        </h3>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          ${canManageBooks ? `<button class="sq-btn sq-btn-gold" style="padding:6px 12px!important; font-size:11.5px!important;" onclick="window.sqOpenBookStudio(null)"><i class="fa-solid fa-book-medical"></i> + رفع كتاب</button>` : ''}
+          ${canManageAds ? `<button class="sq-btn sq-btn-outline" style="padding:6px 12px!important; font-size:11.5px!important;" onclick="window.sqOpenEventStudio(null)"><i class="fa-solid fa-calendar-plus" style="color:var(--accent);"></i> + حدث/معرض</button>` : ''}
+        </div>
+      </div>
+
+      <div class="sq-stats-grid">
+        <div class="sq-stat-box"><span class="sq-stat-num">${totalOrders}</span><span class="sq-stat-lbl">الفواتير والطلبات</span></div>
+        <div class="sq-stat-box"><span class="sq-stat-num">${totalBooks}</span><span class="sq-stat-lbl">الكتب المنشورة</span></div>
+        <div class="sq-stat-box"><span class="sq-stat-num">${totalEvents}</span><span class="sq-stat-lbl">الأحداث النشطة</span></div>
+        <div class="sq-stat-box"><span class="sq-stat-num">${totalUsers}</span><span class="sq-stat-lbl">أعضاء المنصة</span></div>
+      </div>
+
+      <div class="sq-admin-tabs">
+        <button class="sq-admin-tab ${AppState.adminCurrentTab === 'help' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('help')"><i class="fa-solid fa-graduation-cap"></i> دليل التعليمات</button>
+        ${canManageOrders ? `<button class="sq-admin-tab ${AppState.adminCurrentTab === 'orders' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('orders')"><i class="fa-solid fa-file-invoice-dollar"></i> المبيعات والفواتير (${totalOrders})</button>` : ''}
+        ${canManageAds ? `<button class="sq-admin-tab ${AppState.adminCurrentTab === 'ads' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('ads')"><i class="fa-solid fa-calendar-star"></i> الأحداث والمعارض (${totalEvents})</button>` : ''}
+        ${canManageSupport ? `<button class="sq-admin-tab ${AppState.adminCurrentTab === 'tickets' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('tickets')"><i class="fa-solid fa-headset"></i> تذاكر الدعم (${AppState.ticketsList.length})</button>` : ''}
+        ${canManageMod ? `<button class="sq-admin-tab ${AppState.adminCurrentTab === 'reports' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('reports')"><i class="fa-solid fa-flag"></i> البلاغات والرقابة</button>` : ''}
+        ${AppState.isAdmin ? `<button class="sq-admin-tab ${AppState.adminCurrentTab === 'staff' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('staff')"><i class="fa-solid fa-building-columns"></i> دور النشر والكُتّاب والموظفون</button>` : ''}
+        ${AppState.isAdmin ? `<button class="sq-admin-tab ${AppState.adminCurrentTab === 'dar_cfg' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('dar_cfg')"><i class="fa-solid fa-sliders"></i> إعدادات المنصة</button>` : ''}
+      </div>
+      <div id="sq-admin-sub-body"></div>
+    </div>
+  `;
+  window.sqRenderAdminSubContent();
+};
+
+window.sqSwitchAdminSubTab = function(sub) {
+  AppState.adminCurrentTab = sub;
+  window.sqRenderAdminDashboard();
+};
+
+window.sqRenderAdminSubContent = function() {
+  const box = document.getElementById('sq-admin-sub-body'); if (!box) return;
+
+  // 1. قسم المبيعات والفواتير (SK-XXXXXX)
+  if (AppState.adminCurrentTab === 'orders' && window.sqHasPermission('manage_orders')) {
+    box.innerHTML = `
+      <div style="margin-bottom:12px;">
+        <div class="sq-search-wrapper">
+          <i class="fa-solid fa-magnifying-glass" style="color:var(--accent);"></i>
+          <input type="text" id="adm-order-search-in" placeholder="ابحث برقم الفاتورة (مثال: SK-123456) أو اسم المشتري أو هاتفه..." oninput="window.sqFilterAdminOrdersList()">
+        </div>
+      </div>
+      <div id="adm-orders-list-container"></div>
+    `;
+    window.sqFilterAdminOrdersList();
+  }
+  // 2. قسم إدارة الأحداث والمعارض والعروض
+  else if (AppState.adminCurrentTab === 'ads' && window.sqHasPermission('manage_ads')) {
+    const eventsHtml = AppState.eventsList.map(ev => `
+      <div style="background:var(--bg); border:1px solid var(--border); padding:12px; border-radius:14px; margin-top:8px; display:flex; justify-content:space-between; align-items:center; gap:10px;">
+        <div style="display:flex; align-items:center; gap:10px; overflow:hidden; cursor:pointer;" onclick="window.sqOpenEventDetail('${ev.id}')">
+          <img src="${escapeHtml(ev.imageUrl || APP_LOGO_URL)}" style="width:64px; aspect-ratio:16/9; object-fit:cover; border-radius:8px; border:1px solid var(--accent); flex-shrink:0;">
+          <div style="overflow:hidden;">
+            <strong style="font-size:13.5px; color:var(--text-main); display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(ev.title)}</strong>
+            <span style="font-size:11px; color:var(--text-muted);">${escapeHtml(ev.eventDate || '')} • ${ev.clicks || 0} مشاهدة</span>
+          </div>
+        </div>
+        <div style="display:flex; gap:5px; flex-shrink:0;">
+          <button class="sq-btn sq-btn-outline" style="padding:5px 10px!important; font-size:11px!important;" onclick="window.sqOpenEventStudio('${ev.id}')"><i class="fa-solid fa-pen"></i></button>
+          <button class="sq-btn" style="background:var(--danger)!important; padding:5px 10px!important; font-size:11px!important;" onclick="window.sqDeleteEvent('${ev.id}')"><i class="fa-solid fa-trash"></i></button>
+        </div>
+      </div>
+    `).join('');
+
+    box.innerHTML = `
+      <div style="background:var(--bg); padding:14px; border-radius:16px; border:1px solid var(--border); margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div>
+          <h4 style="font-size:14px; font-weight:900;"><i class="fa-solid fa-calendar-star" style="color:var(--accent);"></i> شريط الأحداث والمعارض والعروض التلقائي</h4>
+          <p style="font-size:12px; color:var(--text-muted);">تظهر الأحداث بأسلوب مصغرات يوتيوب (16:9) في أعلى المتجر وتتحرك تلقائياً</p>
+        </div>
+        <button class="sq-btn sq-btn-gold" onclick="window.sqOpenEventStudio(null)"><i class="fa-solid fa-plus"></i> إضافة حدث أو معرض</button>
+      </div>
+      ${eventsHtml || `<p style="text-align:center; padding:20px; color:var(--text-muted);">لا توجد أحداث مضافة حالياً.</p>`}
+    `;
+  }
+  // 3. قسم تذاكر الدعم الفني
+  else if (AppState.adminCurrentTab === 'tickets' && window.sqHasPermission('manage_support')) {
+    if (!AppState.ticketsList.length) {
+      box.innerHTML = `<p style="text-align:center; padding:25px; color:var(--text-muted);">لا توجد تذاكر دعم واردة حالياً.</p>`;
+      return;
+    }
+    box.innerHTML = AppState.ticketsList.map(t => `
+      <div style="background:var(--bg); border:1px solid var(--border); padding:12px; border-radius:14px; margin-bottom:8px;">
+        <div style="display:flex; justify-content:space-between; font-size:12px; font-weight:bold;">
+          <span style="cursor:pointer; color:var(--text-main);" onclick="window.sqViewProfile('${t.uid}')"><i class="fa-solid fa-user"></i> ${escapeHtml(getRealName(t.uid, t.authorName))}</span>
+          <span style="color:var(--accent);">${escapeHtml(t.subject)}</span>
+        </div>
+        <p style="font-size:13px; margin:6px 0; white-space:pre-wrap;">${escapeHtml(t.message)}</p>
+        ${t.reply ? `<div style="font-size:12px; color:var(--success); margin-bottom:6px; background:var(--card); padding:6px 10px; border-radius:8px;"><strong>تم الرد:</strong> ${escapeHtml(t.reply)}</div>` : ''}
+        <div style="display:flex; gap:6px;">
+          <button class="sq-btn" style="padding:5px 12px!important; font-size:11.5px!important;" onclick="window.sqReplyTicket('${t.id}', '${t.uid}')"><i class="fa-solid fa-reply"></i> إرسال رد للعضو</button>
+          <button class="sq-btn sq-btn-outline" style="padding:5px 12px!important; font-size:11.5px!important; color:var(--danger)!important;" onclick="db.collection('safaqat_tickets').doc('${t.id}').delete()">حذف</button>
+        </div>
+      </div>
+    `).join('');
+  }
+  // 4. قسم البلاغات والرقابة
+  else if (AppState.adminCurrentTab === 'reports' && window.sqHasPermission('manage_mod')) {
+    db.collection("safaqat_reports").orderBy("time", "desc").limit(25).get().then(snap => {
+      if (snap.empty) { box.innerHTML = `<p style="text-align:center; padding:20px; color:var(--text-muted);">سجل البلاغات نظيف تماماً.</p>`; return; }
+      let h = '';
+      snap.forEach(doc => {
+        const r = doc.data();
+        h += `
+          <div style="background:var(--bg); border:1px solid var(--border); padding:11px; border-radius:12px; margin-bottom:8px;">
+            <div style="font-size:12px; font-weight:bold; color:var(--danger);">سبب البلاغ: ${escapeHtml(r.reason)}</div>
+            <p style="font-size:12.5px; margin:5px 0;">"${escapeHtml(r.postSnippet || '')}"</p>
+            <div style="display:flex; gap:6px;">
+              <button class="sq-btn" style="padding:4px 10px!important; font-size:11px!important;" onclick="window.sqOpenSinglePost('${r.postId}')">معاينة المنشور</button>
+              <button class="sq-btn" style="background:var(--danger)!important; padding:4px 10px!important; font-size:11px!important;" onclick="db.collection('safaqat_reports').doc('${doc.id}').delete().then(()=>window.sqRenderAdminSubContent())">إغلاق البلاغ</button>
+            </div>
+          </div>
+        `;
+      });
+      box.innerHTML = h;
+    });
+  }
+  // 5. قسم إدارة دور النشر (الشارة الذهبية) والكُتّاب (الشارة الزرقاء) والموظفين
+  else if (AppState.adminCurrentTab === 'staff' && AppState.isAdmin) {
+    box.innerHTML = `
+      <div style="background:var(--bg); border:1px solid var(--border); border-radius:14px; padding:12px;">
+        <h4 style="font-size:14px; font-weight:900; margin-bottom:6px;"><i class="fa-solid fa-building-columns" style="color:var(--accent);"></i> اعتماد دور النشر (ذهبي)، توثيق الكُتّاب (أزرق)، وصلاحيات الموظفين</h4>
+        <p style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">ابحث عن أي حساب بالاسم أو معرف SKID لمنحه شارة دار النشر أو شارة الكاتب أو ربطه بدور النشر:</p>
+        <input type="text" id="adm-staff-search-in" class="sq-input" placeholder="ابحث عن عضو أو دار نشر بالاسم أو معرف SKID..." oninput="window.sqFilterAdminStaffList(this.value)">
+        <div id="adm-staff-list-box" style="display:flex; flex-direction:column; gap:8px; max-height:440px; overflow-y:auto;"></div>
+      </div>
+    `;
+    window.sqFilterAdminStaffList('');
+  }
+  // 6. الإعدادات المركزية للمنصة والدار
+  else if (AppState.adminCurrentTab === 'dar_cfg' && AppState.isAdmin) {
+    box.innerHTML = `
+      <div style="background:var(--bg); padding:14px; border-radius:16px; border:1px solid var(--border);">
+        <h4 style="font-size:14.5px; font-weight:900; margin-bottom:10px;"><i class="fa-solid fa-building-columns" style="color:var(--accent);"></i> الإعدادات المركزية لـ ${escapeHtml(APP_NAME)}</h4>
+        <label class="sq-field-label">اسم المنصة الرسمي:</label>
+        <input type="text" id="cfg-in-appname" class="sq-input" value="${escapeHtml(APP_NAME)}">
+
+        <label class="sq-field-label">رابط صورة شعار الدار الرسمي (Logo URL):</label>
+        <input type="url" id="cfg-in-logo" class="sq-input" value="${escapeHtml(APP_LOGO_URL)}">
+
+        <div style="display:grid; grid-template-columns:2fr 1fr; gap:8px;">
+          <div>
+            <label class="sq-field-label">رقم واتساب الدار الرئيسي لاستقبال الفواتير:</label>
+            <input type="text" id="cfg-in-wa" class="sq-input" value="${escapeHtml(DAR_WHATSAPP_NUMBER)}" placeholder="+201016327947">
+          </div>
+          <div>
+            <label class="sq-field-label">العملة الافتراضية:</label>
+            <input type="text" id="cfg-in-curr" class="sq-input" value="${escapeHtml(DEFAULT_CURRENCY)}" placeholder="ر.س">
+          </div>
+        </div>
+        <button class="sq-btn sq-btn-gold" style="width:100%; margin-top:4px;" onclick="window.sqSaveGeneralDarSettings()"><i class="fa-solid fa-floppy-disk"></i> حفظ وتطبيق إعدادات الدار فوراً</button>
+      </div>
+    `;
+  }
+  // 7. دليل التعليمات والتشغيل الذكي الشامل (لدار النشر والموظفين والإدارة)
+  else if (AppState.adminCurrentTab === 'help') {
+    const isPub = Boolean(AppState.userData && AppState.userData.isPublisher);
+    const myPerms = AppState.isAdmin ? Object.keys(STAFF_PERMISSIONS_MAP) : (AppState.userData.permissions || []);
+
+    let pubGuideHtml = '';
+    if (isPub || AppState.isAdmin) {
+      pubGuideHtml = `
+        <div style="background:var(--card); border:1.5px solid var(--accent); border-radius:16px; padding:14px; margin-bottom:12px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+            <strong style="font-size:14px; color:var(--text-main);"><i class="fa-solid fa-building-columns" style="color:var(--accent);"></i> دليل إدارة دار النشر المعتمدة (الشارة الذهبية)</strong>
+            <span class="sq-vbadge publisher"><i class="fa-solid fa-check"></i></span>
+          </div>
+          <ol style="padding-right:18px; font-size:12.5px; color:var(--text-muted); line-height:1.85;">
+            <li><strong>إضافة رقم واتساب الطلبات الخاص بداركم:</strong> من تبويب (الإعدادات والمظهر) أضف رقم واتساب دار النشر في الخانة المخصصة؛ وبذلك أي قارئ يشتري كتاباً تابعاً لداركم ستتحول فاتورته مباشرة إلى واتساب داركم!</li>
+            <li><strong>رفع الكتب بمرونة مطلقة:</strong> اضغط زر (+) في الشريط السفلي ثم (رفع كتاب جديد)؛ الحقل الإلزامي الوحيد هو (عنوان الكتاب)، ويمكنك إرفاق رابط الكتاب من Google Drive للتحميل المباشر أو تسعيره للبيع الورقي.</li>
+            <li><strong>ربط الكُتّاب والمؤلفين بالدار:</strong> عند رفع الكتاب ابحث عن حساب الكاتب واربطه، وسيظهر الكاتب تلقائياً في تبويب (كُتّاب الدار) داخل صفحة داركم، كما سيظهر اسم داركم في ملفه الشخصي وفي صفحة الكتاب.</li>
+          </ol>
+        </div>
+      `;
+    }
+
+    const guidesMap = {
+      manage_books: {
+        title: 'نظام الكتب المرن، التحميل عبر Google Drive، والترابط الشبكي',
+        steps: [
+          'عند رفع أو تعديل أي كتاب، العنوان فقط هو الحقل الإلزامي، وجميع الحقول الأخرى (السعر، الخصم، الصفحات، سنة النشر) اختيارية تماماً.',
+          'لإتاحة تحميل الكتاب: الصق رابط المشاركة من Google Drive في خانة رابط التحميل، وسيقوم النظام بتحويله لرابط مباشر وتحميله في الخلفية بعد تأكيد القارئ.',
+          'يمكنك تحديد دار النشر التابع لها الكتاب (صفقات كتابية أو أي دار نشر معتمدة) وربطه بحساب الكاتب.'
+        ]
+      },
+      manage_orders: {
+        title: 'إدارة المبيعات والفواتير برقم الطلب (SK-XXXXXX)',
+        steps: [
+          'يصدر النظام لكل سلة مشتريات فاتورة رسمية برقم يبدأ بـ (SK-) ويرسلها المشتري عبر الواتساب.',
+          'ابحث برقم الطلب في تبويب (المبيعات والفواتير) وحدث حالة الشحن (تم التواصل، قيد التجهيز، تم الشحن، تم التسليم) ليصل إشعار فوري للمشتري.'
+        ]
+      },
+      manage_ads: {
+        title: 'إدارة شريط الأحداث والمعارض والعروض التلقائي',
+        steps: [
+          'اضغط زر (+ حدث/معرض) لإضافة معرض كتاب، حفل توقيع، أو عرض ترويجي بصورة مصغرة (16:9).',
+          'يتحرك الشريط تلقائياً أعلى المتجر، وعند ضغط الزائر عليه تفتح صفحة تفاصيل الحدث كاملة.'
+        ]
+      },
+      manage_mod: {
+        title: 'الإشراف والرقابة ومعالجة البلاغات',
+        steps: [
+          'من تبويب (البلاغات والرقابة) يمكنك معاينة أي منشور مُبلّغ عنه وحذفه أو تقييد الحساب المخالف.'
+        ]
+      },
+      manage_support: {
+        title: 'خدمة العملاء والرد على تذاكر الدعم',
+        steps: [
+          'من تبويب (تذاكر الدعم) يمكنك الرد المباشر على استفسارات القراء وطلبات توثيق الكُتّاب ودور النشر.'
+        ]
+      }
+    };
+
+    const activeGuidesHtml = myPerms.map(pk => {
+      const g = guidesMap[pk];
+      const info = STAFF_PERMISSIONS_MAP[pk];
+      if (!g || !info) return '';
+      return `
+        <div style="background:var(--card); border:1px solid var(--border); border-radius:16px; padding:14px; margin-bottom:10px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+            <strong style="font-size:13.5px; color:var(--text-main);"><i class="fa-solid ${info.icon}" style="color:var(--accent);"></i> ${g.title}</strong>
+            <span style="font-size:10px; background:var(--success); color:#fff; padding:2px 8px; border-radius:8px; font-weight:800;">مفعّل</span>
+          </div>
+          <ol style="padding-right:18px; font-size:12.5px; color:var(--text-muted); line-height:1.8;">
+            ${g.steps.map(s => `<li>${escapeHtml(s)}</li>`).join('')}
+          </ol>
+        </div>
+      `;
+    }).join('');
+
+    box.innerHTML = `
+      <div style="background:var(--bg); border:1px solid var(--border); border-radius:16px; padding:14px;">
+        <h4 style="font-size:15px; font-weight:900; margin-bottom:8px; color:var(--text-main);"><i class="fa-solid fa-graduation-cap" style="color:var(--accent);"></i> دليل التعليمات والتشغيل الذكي (الإصدار 1.8)</h4>
+        ${pubGuideHtml}
+        ${activeGuidesHtml}
+      </div>
+    `;
+  }
+};
+
+window.sqFilterAdminOrdersList = function() {
+  const container = document.getElementById('adm-orders-list-container'); if (!container) return;
+  const q = (document.getElementById('adm-order-search-in')?.value || '').toLowerCase().trim();
+  const canManageAllOrders = AppState.isAdmin || (AppState.userData.permissions || []).includes('manage_orders');
+  const isPublisherAccount = Boolean(AppState.userData && AppState.userData.isPublisher);
+  const myUid = AppState.currentUser ? AppState.currentUser.uid : '';
+
+  const filtered = AppState.ordersList.filter(ord => {
+    if (isPublisherAccount && !canManageAllOrders) {
+      const pubs = ord.publisherUids || [];
+      const hasMyBook = (ord.items || []).some(it => it.publisherUid === myUid);
+      if (!pubs.includes(myUid) && !hasMyBook) return false;
+    }
+    if (!q) return true;
+    return (ord.orderCode || '').toLowerCase().includes(q) ||
+           (ord.buyerName || '').toLowerCase().includes(q) ||
+           (ord.buyerPhone || '').toLowerCase().includes(q) ||
+           (ord.city || '').toLowerCase().includes(q);
+  });
+
+  if (!filtered.length) {
+    container.innerHTML = `<p style="text-align:center; padding:25px; color:var(--text-muted);">لا توجد فواتير مطابقة لبحثك.</p>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map(ord => {
+    const stObj = ORDER_STATUS_MAP[ord.status || 'pending_review'] || ORDER_STATUS_MAP.pending_review;
+    const booksSummary = (ord.items || []).map(i => `${i.title} (×${i.qty})`).join(' ، ');
+    return `
+      <div style="background:var(--bg); border:1px solid var(--border); border-radius:16px; padding:14px; margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:6px;">
+          <div>
+            <strong style="font-size:15px; color:var(--text-main); letter-spacing:0.5px;">#${escapeHtml(ord.orderCode)}</strong>
+            <span style="font-size:11px; color:var(--text-muted); margin-right:6px;">${sqFormatExactTime(ord.createdAt)}</span>
+          </div>
+          <span class="sq-order-status-badge" style="background:${stObj.color}20; color:${stObj.color}; border:1px solid ${stObj.color}50;">
+            <i class="fa-solid ${stObj.icon}"></i> ${stObj.label}
+          </span>
+        </div>
+        <div style="font-size:13px; font-weight:800; color:var(--text-main); margin-bottom:3px;"><i class="fa-solid fa-user" style="color:var(--accent);"></i> المستلم: ${escapeHtml(ord.buyerName)} — هاتف: <span dir="ltr">${escapeHtml(ord.buyerPhone)}</span></div>
+        <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:4px;"><i class="fa-solid fa-location-dot" style="color:var(--accent);"></i> العنوان: ${escapeHtml(ord.country)} - ${escapeHtml(ord.city)} (${escapeHtml(ord.address || 'بدون تفصيل إضافي')})</div>
+        <div style="font-size:12.5px; color:var(--text-main); font-weight:800; margin-bottom:4px;"><i class="fa-solid fa-book" style="color:var(--accent);"></i> الكتب: ${escapeHtml(booksSummary)}</div>
+        ${ord.notes ? `<div style="font-size:12px; color:var(--warning); margin-bottom:4px;">ملاحظة المشتري: ${escapeHtml(ord.notes)}</div>` : ''}
+        <div style="font-size:13.5px; color:var(--accent); font-weight:900; margin-bottom:10px;">الإجمالي: ${ord.totalAmount} ${escapeHtml(ord.currency || DEFAULT_CURRENCY)}</div>
+
+        <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; background:var(--card); padding:9px; border-radius:12px; border:1px solid var(--border);">
+          <span style="font-size:11.5px; font-weight:800;">تحديث المرحلة:</span>
+          <select class="sq-select" style="margin:0!important; flex:1; min-width:140px; padding:6px 10px!important; font-size:12px!important;" onchange="window.sqUpdateOrderStatus('${ord.id}', '${ord.buyerUid}', '${escapeHtml(ord.orderCode)}', this.value)">
+            <option value="pending_review" ${ord.status === 'pending_review' ? 'selected' : ''}>1. تمت المراجعة</option>
+            <option value="contacted" ${ord.status === 'contacted' ? 'selected' : ''}>2. تم التواصل</option>
+            <option value="processing" ${ord.status === 'processing' ? 'selected' : ''}>3. تأكيد وتجهيز الطلب</option>
+            <option value="shipped" ${ord.status === 'shipped' ? 'selected' : ''}>4. تم الشحن</option>
+            <option value="completed" ${ord.status === 'completed' ? 'selected' : ''}>5. تم التسليم</option>
+            <option value="cancelled" ${ord.status === 'cancelled' ? 'selected' : ''}>طلب ملغي</option>
+          </select>
+          <button class="sq-btn sq-btn-outline" style="padding:6px 10px!important; font-size:11.5px!important;" onclick="window.sqAddAdminOrderNote('${ord.id}', '${escapeHtml(ord.adminNote || '')}')"><i class="fa-solid fa-comment-medical"></i> ملاحظة للمشتري</button>
+          <a href="https://wa.me/${(ord.buyerPhone || '').replace(/[^0-9]/g, '')}" target="_blank" class="sq-btn" style="background:#25D366!important; color:#fff!important; padding:6px 12px!important; font-size:11.5px!important;"><i class="fa-brands fa-whatsapp"></i> مراسلة المشتري</a>
+        </div>
+      </div>
+    `;
+  }).join('');
+};
+
+window.sqUpdateOrderStatus = function(orderId, buyerUid, orderCode, newStatus) {
+  const stObj = ORDER_STATUS_MAP[newStatus] || ORDER_STATUS_MAP.pending_review;
+  db.collection("safaqat_orders").doc(orderId).update({ status: newStatus, updatedAt: Date.now() }).then(() => {
+    if (buyerUid && buyerUid !== 'GUEST') {
+      window.sqSendNotif(buyerUid, null, `تحديث على فاتورتك (#${orderCode}): أصبحت حالة طلبك الآن "${stObj.label}".`);
+    }
+    sqShowToast(`تم تحديث حالة الطلب #${orderCode} إلى: ${stObj.label}`, "success");
+  });
+};
+
+window.sqAddAdminOrderNote = function(orderId, currentNote) {
+  window.sqOpenCustomPrompt("اكتب ملاحظة للمشتري حول طلبه (مثل رقم بوليصة الشحن أو موعد التسليم):", currentNote, (newNote) => {
+    db.collection("safaqat_orders").doc(orderId).update({ adminNote: newNote, updatedAt: Date.now() }).then(() => {
+      sqShowToast("تم حفظ الملاحظة على الفاتورة!", "success");
+    });
+  });
+};
+
+window.sqFilterAdminStaffList = function(query) {
+  const box = document.getElementById('adm-staff-list-box'); if (!box) return;
+  const q = (query || '').toLowerCase().trim();
+  const list = Object.keys(AppState.allUsers).map(uid => ({ uid, ...AppState.allUsers[uid] })).filter(u => {
+    if (!q) return true;
+    const name = getRealName(u.uid, u.displayName).toLowerCase();
+    const skid = ('sk-' + u.uid.substring(0, 6)).toLowerCase();
+    return name.includes(q) || skid.includes(q);
+  }).slice(0, 30);
+
+  box.innerHTML = list.map(u => {
+    const uName = getRealName(u.uid, u.displayName);
+    const perms = u.permissions || [];
+    const isPub = Boolean(u.isPublisher);
+    const isAuth = Boolean(u.isAuthor);
+    return `
+      <div style="background:var(--card); border:1px solid var(--border); border-radius:14px; padding:11px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:8px;">
+          <div style="display:flex; align-items:center; gap:8px; cursor:pointer;" onclick="window.sqViewProfile('${u.uid}')">
+            <img src="${getRealPhoto(u.uid, u.photoURL)}" style="width:36px; height:36px; border-radius:50%; object-fit:cover;">
+            <div>
+              <strong style="font-size:13.5px;">${escapeHtml(uName)}</strong> ${window.getUserBadges(u.uid, false, false, true)}
+              <div style="font-size:10.5px; color:var(--text-muted);">SK-${u.uid.substring(0, 6).toUpperCase()}</div>
+            </div>
+          </div>
+          <div style="display:flex; gap:5px; flex-wrap:wrap;">
+            <button class="sq-btn ${isPub ? 'sq-btn-gold' : 'sq-btn-outline'}" style="padding:4px 10px!important; font-size:11px!important;" onclick="window.sqTogglePublisher('${u.uid}', ${isPub})">
+              <i class="fa-solid fa-building-columns"></i> ${isPub ? 'دار نشر معتمدة ✓' : 'منح دار نشر (ذهبي)'}
+            </button>
+            <button class="sq-btn" style="background:${isAuth ? 'var(--author)' : 'var(--bg)'}!important; color:${isAuth ? '#fff' : 'var(--text-main)'}!important; border:1px solid var(--border)!important; padding:4px 10px!important; font-size:11px!important;" onclick="window.sqToggleAuthor('${u.uid}', ${isAuth})">
+              <i class="fa-solid fa-feather-pointed"></i> ${isAuth ? 'كاتب موثق ✓' : 'توثيق كاتب (أزرق)'}
+            </button>
+          </div>
+        </div>
+        <div style="display:flex; gap:5px; flex-wrap:wrap; padding-top:6px; border-top:1px dashed var(--border);">
+          ${Object.keys(STAFF_PERMISSIONS_MAP).map(pk => {
+            const hasP = perms.includes(pk);
+            return `<button class="sq-btn ${hasP ? 'sq-btn-gold' : 'sq-btn-outline'}" style="padding:3px 8px!important; font-size:10px!important;" onclick="window.sqToggleStaffPermission('${u.uid}', '${pk}',${hasP})"><i class="fa-solid ${hasP ? 'fa-check' : 'fa-plus'}"></i> ${STAFF_PERMISSIONS_MAP[pk].label}</button>`;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+};
+
+window.sqTogglePublisher = function(uid, currentStatus) {
+  if (!AppState.isAdmin) return;
+  db.collection("safaqat_users").doc(uid).update({ isPublisher: !currentStatus }).then(() => {
+    if (AppState.allUsers[uid]) AppState.allUsers[uid].isPublisher = !currentStatus;
+    sqShowToast(!currentStatus ? "تم اعتماد الحساب كدار نشر (الشارة الذهبية)!" : "تم سحب شارة دار النشر", "success");
+    window.sqRenderPublishersRail();
+    if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+    if (AppState.activeMainView === 'settings_page') window.sqFilterAdminStaffList(document.getElementById('adm-staff-search-in')?.value || '');
+  });
+};
+
+window.sqToggleAuthor = function(uid, currentStatus) {
+  if (!AppState.isAdmin && !window.sqHasPermission('manage_books')) return;
+  const updates = { isAuthor: !currentStatus };
+  if (!currentStatus) {
+    updates.linkedPublishers = firebase.firestore.FieldValue.arrayUnion('DAR_MAIN');
+  }
+  db.collection("safaqat_users").doc(uid).update(updates).then(() => {
+    if (AppState.allUsers[uid]) {
+      AppState.allUsers[uid].isAuthor = !currentStatus;
+      if (!currentStatus) {
+        const cur = AppState.allUsers[uid].linkedPublishers || [];
+        if (!cur.includes('DAR_MAIN')) cur.push('DAR_MAIN');
+        AppState.allUsers[uid].linkedPublishers = cur;
+      }
+    }
+    sqShowToast(!currentStatus ? "تم منح شارة الكاتب المعتمد (الفقاعة الزرقاء)! (ويمكنك تخصيص دور النشر من ملفه)" : "تم سحب شارة الكاتب", "success");
+    if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+    if (AppState.activeMainView === 'settings_page') window.sqFilterAdminStaffList(document.getElementById('adm-staff-search-in')?.value || '');
+  });
+};
+
+window.sqToggleStaffPermission = function(uid, permKey, currentlyHas) {
+  if (!AppState.isAdmin) return;
+  const userObj = AppState.allUsers[uid] || {};
+  let perms = [...(userObj.permissions || [])];
+  if (currentlyHas) perms = perms.filter(p => p !== permKey);
+  else if (!perms.includes(permKey)) perms.push(permKey);
+
+  db.collection("safaqat_users").doc(uid).update({ permissions: perms }).then(() => {
+    if (AppState.allUsers[uid]) AppState.allUsers[uid].permissions = perms;
+    sqShowToast("تم تحديث صلاحيات الموظف بنجاح!", "success");
+    if (AppState.activeMainView === 'settings_page') window.sqFilterAdminStaffList(document.getElementById('adm-staff-search-in')?.value || '');
+    if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+  });
+};
+
+window.sqSaveGeneralDarSettings = function() {
+  if (!AppState.isAdmin) return;
+  const appName = (document.getElementById('cfg-in-appname')?.value || APP_NAME).trim();
+  const logoUrl = (document.getElementById('cfg-in-logo')?.value || APP_LOGO_URL).trim();
+  const whatsappNumber = (document.getElementById('cfg-in-wa')?.value || DAR_WHATSAPP_NUMBER).trim();
+  const defaultCurrency = (document.getElementById('cfg-in-curr')?.value || DEFAULT_CURRENCY).trim();
+
+  const payload = { appName, logoUrl, whatsappNumber, defaultCurrency, updatedAt: Date.now() };
+  db.collection("safaqat_settings").doc("general").set(payload, { merge: true }).then(() => {
+    window.sqApplyDynamicDarSettings(payload);
+    sqShowToast("تم تحديث الشعار ورقم واتساب الفواتير وإعدادات الدار بنجاح!", "success");
+  });
+};
+
+window.sqReplyTicket = function(ticketId, targetUid) {
+  window.sqOpenCustomPrompt("اكتب رد الإدارة على هذه التذكرة:", "", (replyTxt) => {
+    if (!replyTxt) return;
+    db.collection("safaqat_tickets").doc(ticketId).update({ reply: replyTxt }).then(() => {
+      window.sqSendNotif(targetUid, null, `ردّت إدارة الدار على تذكرتك في قسم الدعم.`);
+      sqShowToast("تم إرسال الرد للعضو", "success");
+    });
+  });
+};
+
+window.sqToggleMute = function(uid, currentMute) {
+  if (!window.sqHasPermission('manage_mod')) return;
+  db.collection("safaqat_users").doc(uid).update({ isMuted: !currentMute }).then(() => {
+    if (AppState.allUsers[uid]) AppState.allUsers[uid].isMuted = !currentMute;
+    sqShowToast(!currentMute ? "تم تقييد الحساب من النشر" : "تم فك التقييد", "warning");
+    if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+  });
+};
+
+window.sqToggleBan = function(uid, currentBan) {
+  if (!AppState.isAdmin) return;
+  if (!confirm(currentBan ? "فك الحظر عن هذا الحساب؟" : "حظر هذا الحساب نهائياً؟")) return;
+  db.collection("safaqat_users").doc(uid).update({ isBanned: !currentBan }).then(() => {
+    if (AppState.allUsers[uid]) AppState.allUsers[uid].isBanned = !currentBan;
+    sqShowToast("تم تحديث حالة الحظر", "danger");
+    if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+  });
+};
+
+// =========================================================
+// 🔐 تهيئة النظام الشاملة والمصادقة الآمنة (بدون حلقات تكرار على الهواتف)
+// =========================================================
+window.sqLogin = function() {
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+  auth.signInWithPopup(provider).then((result) => {
+    if (result && result.user) {
+      sqShowToast("تم تسجيل الدخول بنجاح!", "success");
+    }
+  }).catch((err) => {
+    if (err.code === 'auth/popup-blocked' || err.code === 'auth/operation-not-supported-in-this-environment') {
+      auth.signInWithRedirect(provider);
+    } else if (err.code !== 'auth/popup-closed-by-user') {
+      console.warn("Auth Error:", err);
+      sqShowToast("تأكد من إضافة رابط موقعك الحالي في Authorized domains داخل Firebase Auth", "warning");
+    }
+  });
+};
+
+window.sqLogout = function() {
+  auth.signOut().then(() => {
+    window.sqSwitchMainView('store');
+    sqShowToast("تم تسجيل الخروج بنجاح", "success");
+  });
+};
+
+function sqInitAuth() {
+  window.sqApplyThemeMode(localStorage.getItem('sq_theme_pref') || 'light');
+
+  // معالجة نتيجة تسجيل الدخول بالتحويل (Redirect) على الهواتف
+  auth.getRedirectResult().then((result) => {
+    if (result && result.user) {
+      sqShowToast("تم تسجيل الدخول بنجاح!", "success");
+    }
+  }).catch(() => {});
+
+  try {
+    const cachedUsers = localStorage.getItem('sq_offline_users_cache');
+    if (cachedUsers) AppState.allUsers = JSON.parse(cachedUsers);
+    const cachedBooks = localStorage.getItem('sq_offline_books_cache');
+    if (cachedBooks) {
+      AppState.booksList = JSON.parse(cachedBooks);
+      if (AppState.activeMainView === 'store') window.sqRenderLibrarySection();
+    }
+    const cachedPosts = localStorage.getItem('sq_offline_posts_cache');
+    if (cachedPosts) {
+      AppState.posts = JSON.parse(cachedPosts);
+    }
+  } catch (e) {}
+
+  window.sqInitCartFromStorage();
+  db.collection("safaqat_settings").doc("general").get().then(doc => {
+    if (doc.exists) window.sqApplyDynamicDarSettings(doc.data());
+  }).catch(() => {});
+
+  window.sqListenBooks();
+  window.sqLoadFeed();
+  window.sqListenStories();
+  window.sqListenEvents();
+
+  db.collection("safaqat_users").get().then(snap => {
+    snap.forEach(doc => { AppState.allUsers[doc.id] = doc.data(); });
+    try { localStorage.setItem('sq_offline_users_cache', JSON.stringify(AppState.allUsers)); } catch (e) {}
+    window.sqRenderStoriesBar();
+    window.sqRenderPublishersRail();
+    if (AppState.booksList.length > 0 && AppState.activeMainView === 'store') window.sqRenderLibrarySection();
+    if (AppState.posts.length > 0 && AppState.activeMainView === 'community') window.sqRenderFeed(true);
+  }).catch(() => {});
+
+  auth.onAuthStateChanged(user => {
+    if (AppState.presenceInterval) clearInterval(AppState.presenceInterval);
+    if (AppState.userDocUnsubscribe) AppState.userDocUnsubscribe();
+
+    const authArea = document.getElementById('sq-auth-area');
+    if (user) {
+      AppState.currentUser = user;
+      AppState.isAdmin = ADMINS.includes(user.email);
+      window.sqListenNotifs();
+      window.sqListenOrders();
+      window.sqListenTickets();
+
+      const updatePresence = () => {
+        if (AppState.currentUser && navigator.onLine) {
+          db.collection("safaqat_users").doc(AppState.currentUser.uid).update({ lastActive: Date.now() }).catch(() => {});
+        }
+      };
+      updatePresence();
+      AppState.presenceInterval = setInterval(updatePresence, 180000);
+
+      AppState.userDocUnsubscribe = db.collection("safaqat_users").doc(user.uid).onSnapshot(doc => {
+        if (doc.exists) {
+          AppState.userData = doc.data();
+          AppState.allUsers[user.uid] = AppState.userData;
+          if (!AppState.userData.following) AppState.userData.following = [];
+          if (!AppState.userData.blockedUsers) AppState.userData.blockedUsers = [];
+          if (!AppState.userData.bookmarks) AppState.userData.bookmarks = [];
+          if (!AppState.userData.savedBooks) AppState.userData.savedBooks = [];
+          if (!AppState.userData.readingShelf) AppState.userData.readingShelf = {};
+          if (!AppState.userData.permissions) AppState.userData.permissions = [];
+          if (!AppState.userData.linkedPublishers) AppState.userData.linkedPublishers = [];
+          if (AppState.userData.showOnline === undefined) AppState.userData.showOnline = true;
+          if (!AppState.userData.joinedAt) db.collection("safaqat_users").doc(user.uid).update({ joinedAt: Date.now() });
+          if (AppState.isAdmin && !AppState.userData.isAdminUser) db.collection("safaqat_users").doc(user.uid).update({ email: user.email, isAdminUser: true });
+          if (AppState.userData.isBanned && !AppState.isAdmin) { auth.signOut(); alert("عذراً، تم إيقاف هذا الحساب من قبل إدارة المنصة."); return; }
+
+          if (!AppState.userData.agreedToTerms && !AppState.isAdmin) {
+            window.sqOpenLegalPage('terms', true);
+          }
+
+          if (AppState.userData.theme) window.sqApplyThemeMode(AppState.userData.theme);
+          if (AppState.userData.fontSize) document.documentElement.style.setProperty('--post-font-size', AppState.userData.fontSize);
+          window.sqRenderStoriesBar();
+          if (AppState.activeMainView === 'store') window.sqRenderLibrarySection();
+        } else {
+          const initDoc = {
+            displayName: user.displayName || 'قارئ في صفقات', email: user.email || '', isAdminUser: AppState.isAdmin, photoURL: user.photoURL || DEFAULT_PIC,
+            following: [], blockedUsers: [], bookmarks: [], savedBooks: [], readingShelf: {}, currentlyReadingBookId: '',
+            permissions: [], linkedPublishers: [], publisherWhatsapp: '',
+            aiInterests: { cats: {}, authors: {}, keywords: {}, viewedBooks: [] },
+            theme: 'auto', fontSize: '16.5px', showOnline: true,
+            isBanned: false, isMuted: false, isAuthor: false, isPublisher: false,
+            customName: '', bio: '', statusText: '', nationality: '', birthday: '', agreedToTerms: false, joinedAt: Date.now(), lastActive: Date.now()
+          };
+          AppState.userData = initDoc;
+          AppState.allUsers[user.uid] = initDoc;
+          db.collection("safaqat_users").doc(user.uid).set(initDoc).then(() => {
+            if (!AppState.isAdmin) window.sqOpenLegalPage('terms', true);
+          });
+        }
+        if (authArea) {
+          authArea.innerHTML = `
+            <button class="sq-icon-btn" style="padding:0; overflow:hidden; border:1.5px solid var(--accent);" onclick="window.sqViewProfile('${user.uid}')" title="حسابي">
+              <img src="${getRealPhoto(user.uid, user.photoURL)}" style="width:100%; height:100%; object-fit:cover;">
+            </button>
+          `;
+        }
+        window.sqUpdateBadgesUI();
+        const adminTools = document.getElementById('sq-admin-tools');
+        if (adminTools) adminTools.style.display = AppState.isAdmin ? 'block' : 'none';
+      });
+    } else {
+      AppState.currentUser = null;
+      AppState.isAdmin = false;
+      if (authArea) {
+        authArea.innerHTML = `
+          <button class="sq-btn sq-btn-gold" style="padding:7px 15px!important; font-size:12.5px!important;" onclick="window.sqLogin()">
+            <i class="fa-brands fa-google"></i> دخول
+          </button>
+        `;
+      }
+      if (!localStorage.getItem('sq_guest_agreed_v18') && !AppState.deepLinkHandled) {
+        setTimeout(() => {
+          if (!AppState.currentUser && !localStorage.getItem('sq_guest_agreed_v18')) {
+            window.sqOpenLegalPage('terms', true);
+          }
+        }, 1200);
+      }
+    }
+  });
+}
+
+// =========================================================
+// 🚀 تشغيل المنصة المتكاملة (الإصدار 1.8 على GitHub Pages)
+// =========================================================
+sqInitPWAAndOffline();
+sqInitAuth();

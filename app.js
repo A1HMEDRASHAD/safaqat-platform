@@ -3472,3 +3472,838 @@ Object.assign(window.SafaqatApp, {
     }
 
 });
+/**
+ * ============================================================================
+ * منصة صفقات كتابية - Safaqat Kitabiya Platform
+ * الملف الرابع: app.js - المحرك البرمجي الشامل
+ * [ الجزء السادس والأخير 6/6 ]: غرفة قيادة الإدارة الشاملة والتشغيل النهائي للمنصة
+ * الإصدار: 2.0 Enterprise Edition (كود كامل غير مختصر)
+ * ============================================================================
+ */
+
+Object.assign(window.SafaqatApp, {
+
+    // ========================================================================
+    // 1. تهيئة وعرض غرفة قيادة الإدارة الشاملة (Admin Control Hub)
+    // ========================================================================
+    renderAdminControlHub: function () {
+        const container = document.getElementById('admin-dynamic-panel-container');
+        if (!container) return;
+
+        if (!this.state.isAdmin) {
+            container.innerHTML = `
+                <div class="glass-section-card" style="text-align: center; padding: 36px 18px;">
+                    <i class="fa-solid fa-lock" style="font-size: 2.2rem; color: var(--accent-danger); margin-bottom: 10px;"></i>
+                    <h4>هذه المنطقة مخصصة لإدارة المنصة فقط</h4>
+                </div>
+            `;
+            return;
+        }
+
+        // ربط أزرار التبويبات الفرعية داخل لوحة الإدارة
+        const subTabBtns = document.querySelectorAll('#admin-subtabs-ribbon [data-admin-tab]');
+        subTabBtns.forEach((btn) => {
+            const tabKey = btn.getAttribute('data-admin-tab');
+            btn.classList.toggle('active', tabKey === this.state.adminActiveTab);
+            btn.onclick = () => {
+                this.state.adminActiveTab = tabKey;
+                this.renderAdminControlHub();
+            };
+        });
+
+        const activeTab = this.state.adminActiveTab || 'books';
+
+        if (activeTab === 'books') {
+            this.renderAdminBooksAndInventoryPanel(container);
+        } else if (activeTab === 'branding') {
+            this.renderAdminBrandingAndAppPanel(container);
+        } else if (activeTab === 'admob') {
+            this.renderAdminAdMobPanel(container);
+        } else if (activeTab === 'billing') {
+            this.renderAdminBillingAndVipPanel(container);
+        } else if (activeTab === 'currencies') {
+            this.renderAdminCurrenciesAndPublishersPanel(container);
+        } else if (activeTab === 'rawi') {
+            this.renderAdminRawiAssistantPanel(container);
+        }
+    },
+
+    // ========================================================================
+    // 2. التبويب الإداري الأول: إدارة الكتب، المخزون المطبوع الاختياري، والنسخ الرقمية
+    // ========================================================================
+    renderAdminBooksAndInventoryPanel: function (container) {
+        const books = this.state.books || [];
+        const publishers = this.state.publishers || [];
+
+        container.innerHTML = `
+            <div class="glass-section-card" style="margin-bottom: 18px;">
+                <div class="section-header-row">
+                    <h3 id="admin-book-form-heading" style="font-size: 1.02rem; font-weight: 800; color: var(--accent-gold);">
+                        <i class="fa-solid fa-plus-circle"></i> إضافة كتاب جديد أو تعديل إصدار (إدارة مرنة للمخزون والنسخ)
+                    </h3>
+                    <button type="button" id="btn-reset-admin-book-form" class="category-chip-item">
+                        <i class="fa-solid fa-rotate-right"></i> تفريغ الحقول
+                    </button>
+                </div>
+
+                <form id="admin-book-master-form" style="display: flex; flex-direction: column; gap: 12px;">
+                    <input type="hidden" id="admin-edit-book-id" value="">
+
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px;">
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary); font-weight: 700;">عنوان الكتاب أو الرواية *</label>
+                            <input type="text" id="admin-book-title" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" placeholder="مثال: يمنستان" required>
+                        </div>
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary); font-weight: 700;">اسم المؤلف *</label>
+                            <input type="text" id="admin-book-author" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" placeholder="مثال: راوي الشمال" required>
+                        </div>
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary); font-weight: 700;">التصنيف الأدبي *</label>
+                            <input type="text" id="admin-book-category" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" placeholder="مثال: فانتازيا وخيال، روايات، فكر" required>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px;">
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary); font-weight: 700;">دار النشر (بحث واختيار مرن)</label>
+                            <input type="text" id="admin-book-publisher" list="admin-publishers-datalist" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" placeholder="دار صفقات كتابية للنشر والتوزيع">
+                            <datalist id="admin-publishers-datalist">
+                                <option value="دار صفقات كتابية للنشر والتوزيع"></option>
+                                ${publishers.map((p) => `<option value="${this.escapeHtml(p.name)}"></option>`).join('')}
+                            </datalist>
+                        </div>
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary); font-weight: 700;">رابط صورة الغلاف (Direct Image URL)</label>
+                            <input type="url" id="admin-book-cover" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" placeholder="https://...">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary); font-weight: 700;">معرف المنتج في Google Play (SKU - اختياري)</label>
+                            <input type="text" id="admin-book-sku" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" placeholder="safaqat_ebook_01">
+                        </div>
+                    </div>
+
+                    <!-- خيارات نوع النشر وإدارة المخزون الورقي والرقمي -->
+                    <div style="padding: 14px; border-radius: var(--radius-sm); background: rgba(212, 175, 55, 0.07); border: 1px solid var(--border-gold); display: flex; flex-direction: column; gap: 12px;">
+                        <div style="font-weight: 800; font-size: 0.88rem; color: var(--accent-gold);">
+                            <i class="fa-solid fa-boxes-stacked"></i> إعدادات نوع النسخة والمخزون الورقي والتسعير:
+                        </div>
+
+                        <div style="display: flex; flex-wrap: wrap; gap: 16px;">
+                            <label style="display: inline-flex; align-items: center; gap: 8px; font-size: 0.84rem; cursor: pointer; font-weight: 700;">
+                                <input type="checkbox" id="admin-book-digital-only" style="width: 18px; height: 18px; accent-color: var(--accent-gold);">
+                                <span>📱 هذا الكتاب <strong>"نسخة رقمية فقط"</strong> (إخفاء زر إضافة إلى السلة الورقية تماماً)</span>
+                            </label>
+
+                            <label style="display: inline-flex; align-items: center; gap: 8px; font-size: 0.84rem; cursor: pointer; font-weight: 700;">
+                                <input type="checkbox" id="admin-book-vip-included" checked style="width: 18px; height: 18px; accent-color: var(--accent-gold);">
+                                <span>👑 مشمول ضمن <strong>باقة الاشتراك الشهري (VIP)</strong> في التطبيق</span>
+                            </label>
+
+                            <label style="display: inline-flex; align-items: center; gap: 8px; font-size: 0.84rem; cursor: pointer; font-weight: 700;">
+                                <input type="checkbox" id="admin-book-bestseller" style="width: 18px; height: 18px; accent-color: var(--accent-gold);">
+                                <span>🔥 تمييز ضمن <strong>الأكثر مبيعاً</strong></span>
+                            </label>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px;">
+                            <div id="admin-paper-price-wrap">
+                                <label style="font-size: 0.76rem; color: var(--text-secondary); font-weight: 700;">سعر النسخة الورقية (بالعملة الأساسية)</label>
+                                <input type="number" step="0.01" id="admin-book-paper-price" class="store-search-input" style="height: 38px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" placeholder="مثال: 35.00">
+                            </div>
+
+                            <div id="admin-print-stock-wrap">
+                                <label style="font-size: 0.76rem; color: var(--text-secondary); font-weight: 700;">عدد النسخ المطبوعة (اختياري - اتركه فارغاً لإخفائه)</label>
+                                <input type="number" id="admin-book-print-stock" class="store-search-input" style="height: 38px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" placeholder="مثال: 50 (أو اتركه فارغاً)">
+                            </div>
+
+                            <div>
+                                <label style="font-size: 0.76rem; color: var(--text-secondary); font-weight: 700;">سعر النسخة الرقمية الفردية (داخل التطبيق)</label>
+                                <input type="number" step="0.01" id="admin-book-digital-price" class="store-search-input" style="height: 38px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" placeholder="مثال: 19.99">
+                            </div>
+
+                            <div>
+                                <label style="font-size: 0.76rem; color: var(--text-secondary); font-weight: 700;">عدد صفحات الكتاب</label>
+                                <input type="number" id="admin-book-pages-count" class="store-search-input" style="height: 38px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" placeholder="مثال: 240">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- روابط التخزين السحابي الخارجي لتوفير مساحة Firebase المجانية -->
+                    <div style="display: grid; grid-template-columns: 1fr; gap: 10px;">
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary); font-weight: 700;">
+                                <i class="fa-solid fa-cloud-arrow-down" style="color: var(--accent-gold);"></i> رابط ملف PDF السحابي المباشر للقارئ المحمي (Google Drive أو رابط خارجي لتوفير مساحة Firebase):
+                            </label>
+                            <input type="url" id="admin-book-pdf-url" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" placeholder="https://drive.google.com/... أو رابط PDF مباشر">
+                        </div>
+
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary); font-weight: 700;">نبذة تعريفية عن الكتاب (تظهر في المتجر):</label>
+                            <textarea id="admin-book-description" rows="3" style="width: 100%; background: var(--bg-input); border: 1px solid var(--border-glass); border-radius: var(--radius-sm); padding: 10px; font-size: 0.85rem; margin-top: 4px;" placeholder="اكتب وصفاً مشوقاً للكتاب باللغة العربية الفصحى..."></textarea>
+                        </div>
+
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary); font-weight: 700;">
+                                المحتوى النصي الرقمي للقارئ الذكي (اختياري — افصل بين الصفحات بكتابة <code>---PAGE---</code> لدعم القفز التلقائي الدقيق):
+                            </label>
+                            <textarea id="admin-book-digital-content" rows="4" style="width: 100%; background: var(--bg-input); border: 1px solid var(--border-glass); border-radius: var(--radius-sm); padding: 10px; font-size: 0.85rem; margin-top: 4px;" placeholder="نص الصفحة الأولى... &#10;---PAGE---&#10;نص الصفحة الثانية..."></textarea>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn-add-paper-cart" style="padding: 12px; font-size: 0.92rem;">
+                        <i class="fa-solid fa-floppy-disk"></i> حفظ بيانات الكتاب في قاعدة البيانات السحابية
+                    </button>
+                </form>
+            </div>
+
+            <!-- قائمة إدارة الكتب الحالية مع بحث ذكي فوري بداخلها -->
+            <div class="glass-section-card">
+                <div class="section-header-row" style="flex-wrap: wrap; gap: 10px;">
+                    <h3 style="font-size: 0.98rem; font-weight: 800; color: var(--accent-gold);">
+                        📚 الإصدارات المسجلة في المتجر (${books.length})
+                    </h3>
+                    <div style="width: 280px; max-width: 100%;">
+                        <input type="search" id="admin-books-quick-filter" class="store-search-input" style="height: 36px; padding: 0 12px; font-size: 0.8rem;" placeholder="🔍 ابحث سريعاً لتعديل أو حذف كتاب...">
+                    </div>
+                </div>
+                <div id="admin-books-table-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 440px; overflow-y: auto;"></div>
+            </div>
+        `;
+
+        const digitalOnlyCheckbox = document.getElementById('admin-book-digital-only');
+        const paperPriceWrap = document.getElementById('admin-paper-price-wrap');
+        const printStockWrap = document.getElementById('admin-print-stock-wrap');
+
+        if (digitalOnlyCheckbox) {
+            digitalOnlyCheckbox.addEventListener('change', () => {
+                const isDig = digitalOnlyCheckbox.checked;
+                if (paperPriceWrap) paperPriceWrap.style.opacity = isDig ? '0.4' : '1';
+                if (printStockWrap) printStockWrap.style.opacity = isDig ? '0.4' : '1';
+            });
+        }
+
+        const resetBtn = document.getElementById('btn-reset-admin-book-form');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                document.getElementById('admin-book-master-form').reset();
+                document.getElementById('admin-edit-book-id').value = '';
+                document.getElementById('admin-book-form-heading').innerHTML = `<i class="fa-solid fa-plus-circle"></i> إضافة كتاب جديد أو تعديل إصدار`;
+            });
+        }
+
+        const bookForm = document.getElementById('admin-book-master-form');
+        if (bookForm) {
+            bookForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.saveAdminBookForm();
+            });
+        }
+
+        const filterInput = document.getElementById('admin-books-quick-filter');
+        if (filterInput) {
+            filterInput.addEventListener('input', (e) => {
+                this.renderAdminBooksTableRows(e.target.value.trim());
+            });
+        }
+
+        this.renderAdminBooksTableRows('');
+    },
+
+    renderAdminBooksTableRows: function (searchQuery = '') {
+        const listEl = document.getElementById('admin-books-table-list');
+        if (!listEl) return;
+
+        const q = searchQuery.toLowerCase();
+        const filtered = (this.state.books || []).filter((b) => {
+            if (!q) return true;
+            return `${b.title || ''} ${b.author || ''} ${b.publisherName || ''}`.toLowerCase().includes(q);
+        });
+
+        if (filtered.length === 0) {
+            listEl.innerHTML = `<div style="font-size: 0.82rem; color: var(--text-muted); text-align: center; padding: 18px;">لا توجد كتب مطابقة.</div>`;
+            return;
+        }
+
+        listEl.innerHTML = filtered.map((b) => {
+            const safeId = this.escapeHtml(b.id);
+            const hasStock = b.printStock !== undefined && b.printStock !== null && String(b.printStock).trim() !== '';
+            return `
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bg-input); border: 1px solid var(--border-glass); flex-wrap: wrap;">
+                    <div style="min-width: 0; flex: 1;">
+                        <div style="font-weight: 800; font-size: 0.9rem; color: var(--text-primary);">
+                            ${this.escapeHtml(b.title)}
+                            ${b.isDigitalOnly ? `<span class="badge-pill badge-digital-only" style="margin-right: 6px;">نسخة رقمية فقط</span>` : `<span class="badge-pill badge-paper-available" style="margin-right: 6px;">متاح ورقياً</span>`}
+                        </div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">
+                            المؤلف: ${this.escapeHtml(b.author || '')} • الدار: ${this.escapeHtml(b.publisherName || 'صفقات كتابية')}
+                            ${hasStock && !b.isDigitalOnly ? ` • <strong style="color: var(--accent-gold);">المخزون المطبوع: ${b.printStock} نسخة</strong>` : ' • (بدون عداد مخزون مطبوع)'}
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 6px;">
+                        <button type="button" class="category-chip-item active" onclick="SafaqatApp.populateAdminBookForEdit('${safeId}')">
+                            <i class="fa-solid fa-pen-to-square"></i> تعديل
+                        </button>
+                        <button type="button" class="category-chip-item" style="border-color: var(--accent-danger); color: var(--accent-danger);" onclick="SafaqatApp.deleteAdminBook('${safeId}')">
+                            <i class="fa-solid fa-trash-can"></i> حذف
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    },
+
+    populateAdminBookForEdit: function (bookId) {
+        const b = (this.state.books || []).find((item) => item.id === bookId);
+        if (!b) return;
+
+        document.getElementById('admin-edit-book-id').value = b.id;
+        document.getElementById('admin-book-title').value = b.title || '';
+        document.getElementById('admin-book-author').value = b.author || '';
+        document.getElementById('admin-book-category').value = b.category || '';
+        document.getElementById('admin-book-publisher').value = b.publisherName || '';
+        document.getElementById('admin-book-cover').value = b.coverUrl || '';
+        document.getElementById('admin-book-sku').value = b.googlePlaySku || '';
+        document.getElementById('admin-book-digital-only').checked = b.isDigitalOnly === true;
+        document.getElementById('admin-book-vip-included').checked = b.includedInVip !== false;
+        document.getElementById('admin-book-bestseller').checked = b.isBestseller === true;
+        document.getElementById('admin-book-paper-price').value = b.paperPrice ?? b.price ?? '';
+        document.getElementById('admin-book-print-stock').value = (b.printStock !== undefined && b.printStock !== null) ? b.printStock : '';
+        document.getElementById('admin-book-digital-price').value = b.digitalPrice ?? b.price ?? '';
+        document.getElementById('admin-book-pages-count').value = b.pagesCount || '';
+        document.getElementById('admin-book-pdf-url').value = b.pdfDirectUrl || '';
+        document.getElementById('admin-book-description').value = b.description || '';
+        document.getElementById('admin-book-digital-content').value = b.digitalContent || '';
+
+        const heading = document.getElementById('admin-book-form-heading');
+        if (heading) {
+            heading.innerHTML = `<i class="fa-solid fa-pen-to-square"></i> تعديل الكتاب: ${this.escapeHtml(b.title)}`;
+        }
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+
+    saveAdminBookForm: async function () {
+        if (!window.db) return;
+
+        const editId = document.getElementById('admin-edit-book-id').value.trim();
+        const isDigitalOnly = document.getElementById('admin-book-digital-only').checked;
+        const rawStock = document.getElementById('admin-book-print-stock').value.trim();
+
+        const bookPayload = {
+            title: document.getElementById('admin-book-title').value.trim(),
+            author: document.getElementById('admin-book-author').value.trim(),
+            category: document.getElementById('admin-book-category').value.trim() || 'أدب ورواية',
+            publisherName: document.getElementById('admin-book-publisher').value.trim() || 'دار صفقات كتابية للنشر والتوزيع',
+            coverUrl: document.getElementById('admin-book-cover').value.trim(),
+            googlePlaySku: document.getElementById('admin-book-sku').value.trim(),
+            isDigitalOnly: isDigitalOnly,
+            includedInVip: document.getElementById('admin-book-vip-included').checked,
+            isBestseller: document.getElementById('admin-book-bestseller').checked,
+            paperPrice: parseFloat(document.getElementById('admin-book-paper-price').value) || 0,
+            // إذا تركت الإدارة حقل المخزون المطبوع فارغاً، يُحفظ كقيمة فارغة فلا يظهر عداد النسخ في المتجر
+            printStock: (!isDigitalOnly && rawStock !== '') ? parseInt(rawStock, 10) : '',
+            digitalPrice: parseFloat(document.getElementById('admin-book-digital-price').value) || 0,
+            pagesCount: parseInt(document.getElementById('admin-book-pages-count').value, 10) || 100,
+            pdfDirectUrl: document.getElementById('admin-book-pdf-url').value.trim(),
+            description: document.getElementById('admin-book-description').value.trim(),
+            digitalContent: document.getElementById('admin-book-digital-content').value.trim(),
+            hasDigitalEdition: true,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+
+        try {
+            if (editId) {
+                await window.db.collection(window.SAFAQAT_COLLECTIONS.BOOKS).doc(editId).set(bookPayload, { merge: true });
+                this.showToast(`✅ تم تحديث بيانات كتاب "${bookPayload.title}" بنجاح`);
+            } else {
+                bookPayload.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+                await window.db.collection(window.SAFAQAT_COLLECTIONS.BOOKS).add(bookPayload);
+                this.showToast(`🎉 تمت إضافة كتاب "${bookPayload.title}" إلى المتجر!`);
+            }
+            document.getElementById('btn-reset-admin-book-form').click();
+        } catch (err) {
+            this.showToast('⚠️ خطأ أثناء حفظ الكتاب: ' + err.message);
+        }
+    },
+
+    deleteAdminBook: async function (bookId) {
+        if (!window.db) return;
+        try {
+            await window.db.collection(window.SAFAQAT_COLLECTIONS.BOOKS).doc(bookId).delete();
+            this.showToast('🗑️ تم حذف الكتاب من قاعدة البيانات');
+        } catch (err) {
+            this.showToast('⚠️ تعذر حذف الكتاب: ' + err.message);
+        }
+    },
+
+    // ========================================================================
+    // 3. التبويب الإداري الثاني: التحكم المرن بالشعار (3 أوضاع) + رابط تطبيق جوجل بلاي
+    // ========================================================================
+    renderAdminBrandingAndAppPanel: function (container) {
+        const settings = window.SafaqatConfig.liveSettings;
+        const b = settings.branding || {};
+        const appP = settings.appProtection || {};
+
+        container.innerHTML = `
+            <div class="glass-section-card">
+                <div class="section-header-row">
+                    <h3 style="font-size: 1.02rem; font-weight: 800; color: var(--accent-gold);">
+                        🎨 التحكم المرن بشعار الموقع + رابط تطبيق متجر جوجل بلاي
+                    </h3>
+                </div>
+
+                <form id="admin-branding-form" style="display: flex; flex-direction: column; gap: 14px;">
+                    <div>
+                        <label style="font-size: 0.82rem; font-weight: 700; color: var(--accent-gold);">وضع عرض شعار المنصة في الهيدر (3 أوضاع مرنة):</label>
+                        <select id="admin-logo-mode" style="width: 100%; background: var(--bg-input); border: 1px solid var(--border-gold); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 0.86rem; margin-top: 6px;">
+                            <option value="official_template" ${b.logoMode === 'official_template' ? 'selected' : ''}>1. القالب الرسمي (الأيقونة الافتراضية + اسم المنصة والوصف)</option>
+                            <option value="full_custom_logo" ${b.logoMode === 'full_custom_logo' ? 'selected' : ''}>2. شعار مفرغ كامل (إخفاء النص والأيقونة وعرض صورة شعارك الكامل PNG/SVG)</option>
+                            <option value="custom_icon_only" ${b.logoMode === 'custom_icon_only' ? 'selected' : ''}>3. تغيير الأيقونة وحدها مع الإبقاء على نص القالب الرسمي</option>
+                        </select>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px;">
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary);">اسم المنصة الرئيسي</label>
+                            <input type="text" id="admin-site-title" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${this.escapeHtml(b.siteTitle || 'صفقات كتابية')}">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary);">الشعار اللفظي الفرعي</label>
+                            <input type="text" id="admin-site-subtitle" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${this.escapeHtml(b.siteSubtitle || 'متجر الكتب والمجتمع الأدبي')}">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary);">رقم واتساب استلام طلبات النسخ الورقية (مع مفتاح الدولة)</label>
+                            <input type="text" id="admin-whatsapp-number" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${this.escapeHtml(b.officialWhatsappNumber || '966500000000')}">
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px;">
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary);">رابط الشعار المفرغ الكامل (لوضع الشعار الكامل)</label>
+                            <input type="url" id="admin-full-logo-url" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${this.escapeHtml(b.customFullLogoUrl || '')}" placeholder="https://.../logo.png">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary);">رابط الأيقونة المخصصة وحدها (لوضع تغيير الأيقونة)</label>
+                            <input type="url" id="admin-custom-icon-url" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${this.escapeHtml(b.customIconUrl || '')}" placeholder="https://.../icon.png">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary);">ارتفاع الشعار بالبكسل (px)</label>
+                            <input type="number" id="admin-logo-height" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${b.logoHeightPx || 44}">
+                        </div>
+                    </div>
+
+                    <hr style="border-top: 1px dashed var(--border-glass); margin: 4px 0;">
+
+                    <div>
+                        <label style="font-size: 0.82rem; font-weight: 700; color: var(--accent-emerald);">
+                            <i class="fa-brands fa-google-play"></i> رابط تطبيقك الرسمي على متجر Google Play (يظهر في الهيدر ويوجه زوار الويب لتثبيت التطبيق):
+                        </label>
+                        <input type="url" id="admin-playstore-url" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 6px;" value="${this.escapeHtml(appP.googlePlayStoreUrl || 'https://play.google.com/store/apps')}">
+                    </div>
+
+                    <div style="display: flex; flex-direction: column; gap: 10px; background: var(--bg-input); padding: 12px; border-radius: var(--radius-sm);">
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.84rem; cursor: pointer;">
+                            <input type="checkbox" id="admin-show-play-header" ${appP.showPlayStoreIconInHeader !== false ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--accent-gold);">
+                            <span>إظهار أيقونة شعار جوجل بلاي المصغرة في الهيدر العلوي للمتصفحين</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.84rem; cursor: pointer;">
+                            <input type="checkbox" id="admin-restrict-digital-app" ${appP.restrictDigitalBooksToApp !== false ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--accent-gold);">
+                            <span>حصر قراءة وشراء النسخ الرقمية داخل التطبيق فقط (تحويل زوار الويب مباشرة إلى متجر جوجل بلاي)</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.84rem; cursor: pointer;">
+                            <input type="checkbox" id="admin-require-account-library" ${appP.requireAccountForLibrary !== false ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--accent-gold);">
+                            <span>حصر ميزة القراءة وقسم "مكتبتي" على الأعضاء المسجلين بحساب فقط</span>
+                        </label>
+                    </div>
+
+                    <button type="submit" class="btn-add-paper-cart" style="padding: 12px;">
+                        <i class="fa-solid fa-check"></i> حفظ إعدادات الشعار وحماية التطبيق فوراً
+                    </button>
+                </form>
+            </div>
+        `;
+
+        document.getElementById('admin-branding-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                await window.SafaqatConfig.savePlatformSettings({
+                    branding: {
+                        logoMode: document.getElementById('admin-logo-mode').value,
+                        siteTitle: document.getElementById('admin-site-title').value.trim(),
+                        siteSubtitle: document.getElementById('admin-site-subtitle').value.trim(),
+                        officialWhatsappNumber: document.getElementById('admin-whatsapp-number').value.trim(),
+                        customFullLogoUrl: document.getElementById('admin-full-logo-url').value.trim(),
+                        customIconUrl: document.getElementById('admin-custom-icon-url').value.trim(),
+                        logoHeightPx: parseInt(document.getElementById('admin-logo-height').value, 10) || 44
+                    },
+                    appProtection: {
+                        googlePlayStoreUrl: document.getElementById('admin-playstore-url').value.trim(),
+                        showPlayStoreIconInHeader: document.getElementById('admin-show-play-header').checked,
+                        restrictDigitalBooksToApp: document.getElementById('admin-restrict-digital-app').checked,
+                        requireAccountForLibrary: document.getElementById('admin-require-account-library').checked
+                    }
+                });
+                this.showToast('✨ تم تحديث الشعار وإعدادات التطبيق في كافة أنحاء المنصة!');
+            } catch (err) {
+                this.showToast('⚠️ تعذر حفظ الإعدادات: ' + err.message);
+            }
+        });
+    },
+
+    // ========================================================================
+    // 4. التبويب الإداري الثالث: لوحة تحكم خوارزمية إعلانات Google AdMob المرنة
+    // ========================================================================
+    renderAdminAdMobPanel: function (container) {
+        const admob = window.SafaqatConfig.liveSettings.admobConfig || {};
+
+        container.innerHTML = `
+            <div class="glass-section-card">
+                <div class="section-header-row">
+                    <h3 style="font-size: 1.02rem; font-weight: 800; color: var(--accent-gold);">
+                        📢 لوحة التحكم المرنة بإعلانات Google AdMob (خوارزمية البطاقات الشفافة غير المزعجة)
+                    </h3>
+                </div>
+
+                <form id="admin-admob-form" style="display: flex; flex-direction: column; gap: 14px;">
+                    <div style="padding: 12px; border-radius: var(--radius-sm); background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.35);">
+                        <label style="display: flex; align-items: center; gap: 10px; font-size: 0.92rem; font-weight: 800; cursor: pointer;">
+                            <input type="checkbox" id="admin-admob-enabled" ${admob.enabled ? 'checked' : ''} style="width: 20px; height: 20px; accent-color: var(--accent-emerald);">
+                            <span>تفعيل عرض إعلانات Google AdMob في المنصة (قم بإلغاء التحديد لإيقاف الإعلانات تماماً بضغطة زر)</span>
+                        </label>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px;">
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary); font-weight: 700;">معرف الناشر (Publisher ID)</label>
+                            <input type="text" id="admin-admob-pub-id" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${this.escapeHtml(admob.publisherId || '')}" placeholder="ca-app-pub-XXXXXXXXXXXXXXXX">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary); font-weight: 700;">معرف وحدة الإعلانات المدمجة الشفافة (Native Ad Unit ID)</label>
+                            <input type="text" id="admin-admob-native-id" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${this.escapeHtml(admob.nativeAdUnitId || '')}" placeholder="ca-app-pub-XXXX/YYYY">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary); font-weight: 700;">وضع كثافة ظهور الإعلانات (تخفيف / توازن / تكثيف)</label>
+                            <select id="admin-admob-density" style="width: 100%; height: 40px; background: var(--bg-input); border: 1px solid var(--border-glass); border-radius: var(--radius-sm); padding: 0 12px; font-size: 0.84rem; margin-top: 4px;">
+                                <option value="light" ${admob.densityMode === 'light' ? 'selected' : ''}>🌿 خفيف جداً (مسافات متباعدة جداً لراحة القارئ)</option>
+                                <option value="balanced" ${admob.densityMode === 'balanced' ? 'selected' : ''}>⚖️ متوازن (المعيار الافتراضي الموصى به)</option>
+                                <option value="intensive" ${admob.densityMode === 'intensive' ? 'selected' : ''}>🔥 مكثف مدروس (زيادة الظهور دون نوافذ منبثقة)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px;">
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary);">إدراج بطاقة إعلانية بعد كل (X) منشورات في المجتمع</label>
+                            <input type="number" min="2" max="30" id="admin-admob-posts-interval" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${admob.postsInterval || 6}">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary);">إدراج بطاقة إعلانية بعد كل (X) كتب في المتجر</label>
+                            <input type="number" min="2" max="30" id="admin-admob-books-interval" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${admob.booksInterval || 8}">
+                        </div>
+                    </div>
+
+                    <div style="display: flex; flex-direction: column; gap: 8px; background: var(--bg-input); padding: 12px; border-radius: var(--radius-sm);">
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.84rem; cursor: pointer;">
+                            <input type="checkbox" id="admin-admob-allow-dismiss" ${admob.allowUserDismiss !== false ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--accent-gold);">
+                            <span>إتاحة زر (×) للمتصفح لإغلاق البطاقة الإعلانية فوراً إذا لم تهمه</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.84rem; cursor: pointer;">
+                            <input type="checkbox" id="admin-admob-hide-vip" ${admob.hideForVipSubscribers !== false ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--accent-gold);">
+                            <span>إخفاء الإعلانات تلقائياً للمشتركين في باقة القارئ الشغوف (VIP)</span>
+                        </label>
+                    </div>
+
+                    <button type="submit" class="btn-add-paper-cart" style="padding: 12px;">
+                        <i class="fa-solid fa-sliders"></i> حفظ وتطبيق إعدادات خوارزمية AdMob
+                    </button>
+                </form>
+            </div>
+        `;
+
+        document.getElementById('admin-admob-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                await window.SafaqatConfig.savePlatformSettings({
+                    admobConfig: {
+                        enabled: document.getElementById('admin-admob-enabled').checked,
+                        publisherId: document.getElementById('admin-admob-pub-id').value.trim(),
+                        nativeAdUnitId: document.getElementById('admin-admob-native-id').value.trim(),
+                        densityMode: document.getElementById('admin-admob-density').value,
+                        postsInterval: parseInt(document.getElementById('admin-admob-posts-interval').value, 10) || 6,
+                        booksInterval: parseInt(document.getElementById('admin-admob-books-interval').value, 10) || 8,
+                        allowUserDismiss: document.getElementById('admin-admob-allow-dismiss').checked,
+                        hideForVipSubscribers: document.getElementById('admin-admob-hide-vip').checked
+                    }
+                });
+                this.state.dismissedAdSlots.clear();
+                this.showToast('✅ تم تحديث خوارزمية إعلانات Google AdMob بنجاح!');
+            } catch (err) {
+                this.showToast('⚠️ خطأ في حفظ الإعدادات: ' + err.message);
+            }
+        });
+    },
+
+    // ========================================================================
+    // 5. التبويب الإداري الرابع: مفاتيح دفع Google Play Billing وباقة VIP الشهرية
+    // ========================================================================
+    renderAdminBillingAndVipPanel: function (container) {
+        const mon = window.SafaqatConfig.liveSettings.monetization || {};
+        const gBilling = mon.googlePlayBilling || {};
+
+        container.innerHTML = `
+            <div class="glass-section-card">
+                <div class="section-header-row">
+                    <h3 style="font-size: 1.02rem; font-weight: 800; color: var(--accent-gold);">
+                        💳 إعدادات الدخل المزدوج، باقة الاشتراك الشهري (VIP)، ومفاتيح دفع Google Play
+                    </h3>
+                </div>
+
+                <form id="admin-billing-form" style="display: flex; flex-direction: column; gap: 14px;">
+                    <div style="display: flex; flex-wrap: wrap; gap: 16px; background: var(--bg-input); padding: 12px; border-radius: var(--radius-sm);">
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem; font-weight: 700; cursor: pointer;">
+                            <input type="checkbox" id="admin-enable-single-sales" ${mon.enableIndividualBookSales !== false ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--accent-gold);">
+                            <span>تفعيل البيع الفردي لكل كتاب رقمي (أسلوب أمازون وجوجل بلاي)</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem; font-weight: 700; cursor: pointer;">
+                            <input type="checkbox" id="admin-enable-vip-sub" ${mon.enableVipSubscription !== false ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--accent-gold);">
+                            <span>تفعيل باقة الاشتراك الشهري الشامل (VIP) لقراءة الكتب الرقمية</span>
+                        </label>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px;">
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary);">اسم باقة الاشتراك الشهري</label>
+                            <input type="text" id="admin-vip-name" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${this.escapeHtml(mon.vipPlanName || 'باقة القارئ الشغوف (VIP)')}">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.78rem; color: var(--text-secondary);">سعر الاشتراك الشهري (بالعملة الأساسية SAR)</label>
+                            <input type="number" step="0.01" id="admin-vip-price" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${mon.vipMonthlyPriceSAR || 29.99}">
+                        </div>
+                    </div>
+
+                    <div style="padding: 14px; border-radius: var(--radius-sm); background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.35); display: flex; flex-direction: column; gap: 10px;">
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.88rem; font-weight: 800; color: #60a5fa; cursor: pointer;">
+                            <input type="checkbox" id="admin-gplay-billing-enabled" ${gBilling.enabled ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: #3b82f6;">
+                            <span>تفعيل الربط المباشر مع فواتير جوجل (Google Play Billing API داخل التطبيق)</span>
+                        </label>
+                        <p style="font-size: 0.76rem; color: var(--text-muted);">
+                            عندما ترفع التطبيق على Google Play Console، الصق مفتاح الترخيص ومعرف الاشتراك هنا ليتفعل الدفع التلقائي دون إعادة كتابة الكود:
+                        </p>
+                        <div>
+                            <label style="font-size: 0.76rem; color: var(--text-secondary);">مفتاح الترخيص العام من جوجل بلاي (Base64-encoded RSA Public Key)</label>
+                            <input type="text" id="admin-gplay-public-key" class="store-search-input" style="height: 38px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${this.escapeHtml(gBilling.publicKeyBase64 || '')}" placeholder="MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...">
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;">
+                            <div>
+                                <label style="font-size: 0.76rem; color: var(--text-secondary);">معرف الاشتراك الشهري في جوجل (Subscription Product ID)</label>
+                                <input type="text" id="admin-gplay-vip-sku" class="store-search-input" style="height: 38px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${this.escapeHtml(gBilling.vipMonthlyProductId || 'safaqat_vip_monthly_sub')}">
+                            </div>
+                            <div>
+                                <label style="font-size: 0.76rem; color: var(--text-secondary);">بادئة معرفات الكتب الفردية (Book SKU Prefix)</label>
+                                <input type="text" id="admin-gplay-sku-prefix" class="store-search-input" style="height: 38px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${this.escapeHtml(gBilling.bookSkuPrefix || 'safaqat_ebook_')}">
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn-add-paper-cart" style="padding: 12px;">
+                        <i class="fa-solid fa-floppy-disk"></i> حفظ إعدادات الدفع والباقات
+                    </button>
+                </form>
+            </div>
+        `;
+
+        document.getElementById('admin-billing-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                await window.SafaqatConfig.savePlatformSettings({
+                    monetization: {
+                        enableIndividualBookSales: document.getElementById('admin-enable-single-sales').checked,
+                        enableVipSubscription: document.getElementById('admin-enable-vip-sub').checked,
+                        vipPlanName: document.getElementById('admin-vip-name').value.trim(),
+                        vipMonthlyPriceSAR: parseFloat(document.getElementById('admin-vip-price').value) || 29.99,
+                        googlePlayBilling: {
+                            enabled: document.getElementById('admin-gplay-billing-enabled').checked,
+                            publicKeyBase64: document.getElementById('admin-gplay-public-key').value.trim(),
+                            vipMonthlyProductId: document.getElementById('admin-gplay-vip-sku').value.trim(),
+                            bookSkuPrefix: document.getElementById('admin-gplay-sku-prefix').value.trim()
+                        }
+                    }
+                });
+                this.showToast('💳 تم حفظ إعدادات الدفع وباقة VIP بنجاح!');
+            } catch (err) {
+                this.showToast('⚠️ تعذر حفظ إعدادات الدفع: ' + err.message);
+            }
+        });
+    },
+
+    // ========================================================================
+    // 6. التبويب الإداري الخامس: مرونة العملات الكاملة وإدارة دور النشر
+    // ========================================================================
+    renderAdminCurrenciesAndPublishersPanel: function (container) {
+        const currSys = window.SafaqatConfig.liveSettings.currencySystem || {};
+        const currencies = currSys.supportedCurrencies || {};
+
+        container.innerHTML = `
+            <div class="glass-section-card" style="margin-bottom: 16px;">
+                <div class="section-header-row">
+                    <h3 style="font-size: 1.02rem; font-weight: 800; color: var(--accent-gold);">
+                        🪙 نظام العملات المرن للمنصة ودور النشر
+                    </h3>
+                </div>
+                <form id="admin-currencies-form" style="display: flex; flex-direction: column; gap: 12px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px;">
+                        ${Object.keys(currencies).map((code) => {
+                            const c = currencies[code];
+                            return `
+                                <div style="padding: 12px; border-radius: var(--radius-sm); background: var(--bg-input); border: 1px solid var(--border-glass);">
+                                    <label style="display: flex; align-items: center; justify-content: space-between; font-weight: 800; font-size: 0.86rem; margin-bottom: 8px; cursor: pointer;">
+                                        <span>${this.escapeHtml(c.name)} (${this.escapeHtml(code)})</span>
+                                        <input type="checkbox" data-curr-enable="${this.escapeHtml(code)}" ${c.enabled !== false ? 'checked' : ''} style="width: 17px; height: 17px; accent-color: var(--accent-gold);">
+                                    </label>
+                                    <div style="font-size: 0.74rem; color: var(--text-muted); margin-bottom: 4px;">معامل التحويل مقابل الريال السعودي (SAR):</div>
+                                    <input type="number" step="0.001" data-curr-rate="${this.escapeHtml(code)}" class="store-search-input" style="height: 34px; padding: 0 10px; font-size: 0.82rem;" value="${c.rateFromSAR || 1}">
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                    <button type="submit" class="btn-add-paper-cart" style="padding: 11px;">
+                        <i class="fa-solid fa-coins"></i> حفظ أسعار الصرف والعملات المفعلة
+                    </button>
+                </form>
+            </div>
+
+            <!-- إضافة دار نشر معتمدة بعملة مرنة خاصة بها -->
+            <div class="glass-section-card">
+                <div class="section-header-row">
+                    <h3 style="font-size: 0.98rem; font-weight: 800; color: var(--accent-gold);">
+                        🏛️ إضافة دار نشر شريكة مع إعدادات عملتها المرنة
+                    </h3>
+                </div>
+                <form id="admin-add-publisher-form" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; align-items: end;">
+                    <div>
+                        <label style="font-size: 0.76rem; color: var(--text-secondary);">اسم دار النشر *</label>
+                        <input type="text" id="admin-new-pub-name" class="store-search-input" style="height: 38px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" placeholder="مثال: دار الشمال للنشر" required>
+                    </div>
+                    <div>
+                        <label style="font-size: 0.76rem; color: var(--text-secondary);">العملة الافتراضية للدار</label>
+                        <select id="admin-new-pub-currency" style="width: 100%; height: 38px; background: var(--bg-input); border: 1px solid var(--border-glass); border-radius: var(--radius-sm); padding: 0 10px; font-size: 0.82rem; margin-top: 4px;">
+                            ${Object.keys(currencies).map((code) => `<option value="${this.escapeHtml(code)}">${this.escapeHtml(currencies[code].name)} (${this.escapeHtml(code)})</option>`).join('')}
+                        </select>
+                    </div>
+                    <button type="submit" class="btn-add-paper-cart" style="height: 38px;">
+                        <i class="fa-solid fa-plus"></i> اعتماد الدار
+                    </button>
+                </form>
+            </div>
+        `;
+
+        document.getElementById('admin-currencies-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const updatedMap = JSON.parse(JSON.stringify(currencies));
+            container.querySelectorAll('[data-curr-enable]').forEach((chk) => {
+                const code = chk.getAttribute('data-curr-enable');
+                if (updatedMap[code]) updatedMap[code].enabled = chk.checked;
+            });
+            container.querySelectorAll('[data-curr-rate]').forEach((inp) => {
+                const code = inp.getAttribute('data-curr-rate');
+                if (updatedMap[code]) updatedMap[code].rateFromSAR = parseFloat(inp.value) || 1;
+            });
+
+            try {
+                await window.SafaqatConfig.savePlatformSettings({
+                    currencySystem: {
+                        supportedCurrencies: updatedMap
+                    }
+                });
+                this.showToast('🪙 تم تحديث نظام العملات وأسعار الصرف المرنة بنجاح!');
+            } catch (err) {
+                this.showToast('⚠️ تعذر حفظ العملات: ' + err.message);
+            }
+        });
+
+        document.getElementById('admin-add-publisher-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('admin-new-pub-name').value.trim();
+            const defaultCurr = document.getElementById('admin-new-pub-currency').value;
+            if (!name || !window.db) return;
+
+            try {
+                await window.db.collection(window.SAFAQAT_COLLECTIONS.PUBLISHERS).add({
+                    name: name,
+                    defaultCurrency: defaultCurr,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+                document.getElementById('admin-new-pub-name').value = '';
+                this.showToast(`🏛️ تمت إضافة "${name}" بعملتها المرنة (${defaultCurr})`);
+            } catch (err) {
+                this.showToast('⚠️ تعذر إضافة الدار: ' + err.message);
+            }
+        });
+    },
+
+    // ========================================================================
+    // 7. التبويب الإداري السادس: التحكم بالمساعد الذكي "راوي" (تفعيل أو إلغاء فوري)
+    // ========================================================================
+    renderAdminRawiAssistantPanel: function (container) {
+        const rawi = window.SafaqatConfig.liveSettings.rawiAssistant || {};
+
+        container.innerHTML = `
+            <div class="glass-section-card">
+                <div class="section-header-row">
+                    <h3 style="font-size: 1.02rem; font-weight: 800; color: var(--accent-gold);">
+                        🤖 التحكم بالمساعد الأدبي الذكي "راوي" (تفعيل فعلي أو إلغاء نهائي)
+                    </h3>
+                </div>
+
+                <form id="admin-rawi-form" style="display: flex; flex-direction: column; gap: 14px;">
+                    <div style="padding: 12px; border-radius: var(--radius-sm); background: var(--bg-input); border: 1px solid var(--border-gold);">
+                        <label style="display: flex; align-items: center; gap: 10px; font-size: 0.9rem; font-weight: 800; cursor: pointer;">
+                            <input type="checkbox" id="admin-rawi-enabled" ${rawi.enabled !== false ? 'checked' : ''} style="width: 20px; height: 20px; accent-color: var(--accent-gold);">
+                            <span>تفعيل المساعد الذكي "راوي" وربطه ببيانات المتجر (ألغِ التحديد لإخفائه وإلغائه تماماً من المنصة)</span>
+                        </label>
+                    </div>
+
+                    <div>
+                        <label style="font-size: 0.78rem; color: var(--text-secondary);">اسم المساعد الظاهر للقراء</label>
+                        <input type="text" id="admin-rawi-name" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm); margin-top: 4px;" value="${this.escapeHtml(rawi.assistantName || 'راوي (المستشار الأدبي الذكي)')}">
+                    </div>
+
+                    <div>
+                        <label style="font-size: 0.78rem; color: var(--text-secondary);">رسالة الترحيب التلقائية</label>
+                        <textarea id="admin-rawi-welcome" rows="3" style="width: 100%; background: var(--bg-input); border: 1px solid var(--border-glass); border-radius: var(--radius-sm); padding: 10px; font-size: 0.85rem; margin-top: 4px;">${this.escapeHtml(rawi.welcomeMessage || '')}</textarea>
+                    </div>
+
+                    <button type="submit" class="btn-add-paper-cart" style="padding: 12px;">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i> حفظ إعدادات المساعد الذكي "راوي"
+                    </button>
+                </form>
+            </div>
+        `;
+
+        document.getElementById('admin-rawi-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                await window.SafaqatConfig.savePlatformSettings({
+                    rawiAssistant: {
+                        enabled: document.getElementById('admin-rawi-enabled').checked,
+                        assistantName: document.getElementById('admin-rawi-name').value.trim(),
+                        welcomeMessage: document.getElementById('admin-rawi-welcome').value.trim()
+                    }
+                });
+                this.showToast('🤖 تم تحديث حالة وسلوك المساعد "راوي" فوراً!');
+            } catch (err) {
+                this.showToast('⚠️ تعذر حفظ إعدادات راوي: ' + err.message);
+            }
+        });
+    }
+
+});
+
+// ============================================================================
+// التشغيل التلقائي الشامل للمنصة فور اكتمال تحميل الصفحة
+// ============================================================================
+document.addEventListener('DOMContentLoaded', () => {
+    if (window.SafaqatApp && typeof window.SafaqatApp.init === 'function') {
+        window.SafaqatApp.init();
+    }
+});

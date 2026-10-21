@@ -836,3 +836,628 @@ window.SafaqatApp = {
         this.appendRawiMessage('assistant', `<div>${headingText}</div>${cardsHtml}`);
     }
 };
+/**
+ * ============================================================================
+ * منصة صفقات كتابية - Safaqat Kitabiya Platform
+ * الملف الرابع: app.js - المحرك البرمجي الشامل
+ * [ الجزء الثاني 2/6 ]: محرك المتجر، المخزون المرن، الفلاتر التسلسلية، والبحث الذكي الفوري
+ * الإصدار: 2.0 Enterprise Edition (كود كامل غير مختصر)
+ * ============================================================================
+ */
+
+Object.assign(window.SafaqatApp, {
+
+    // ========================================================================
+    // 1. تهيئة محرك المتجر وربط التبويبات والأدراج التسلسلية
+    // ========================================================================
+    initStoreEngine: function () {
+        // 1. حقل البحث الرئيسي الفوري في المتجر
+        const mainSearchInput = document.getElementById('store-main-search-input');
+        if (mainSearchInput) {
+            mainSearchInput.addEventListener('input', (e) => {
+                this.state.storeFilters.search = e.target.value.trim();
+                this.renderStoreBooksGrid();
+            });
+        }
+
+        // 2. زر فتح/إغلاق درج "كل التصنيفات" التسلسلي الأنيق
+        const catBtn = document.getElementById('btn-toggle-categories-drawer');
+        const catDrawer = document.getElementById('sequential-categories-drawer');
+        const pubDrawer = document.getElementById('sequential-publishers-drawer');
+
+        if (catBtn && catDrawer) {
+            catBtn.addEventListener('click', () => {
+                const isHidden = catDrawer.classList.contains('hidden');
+                if (pubDrawer) pubDrawer.classList.add('hidden');
+                catDrawer.classList.toggle('hidden', !isHidden);
+                catBtn.classList.toggle('active', isHidden);
+            });
+        }
+
+        // 3. زر فتح/إغلاق درج "دور النشر" التسلسلي مع البحث الفوري بداخله
+        const pubBtn = document.getElementById('btn-toggle-publishers-drawer');
+        if (pubBtn && pubDrawer) {
+            pubBtn.addEventListener('click', () => {
+                const isHidden = pubDrawer.classList.contains('hidden');
+                if (catDrawer) catDrawer.classList.add('hidden');
+                pubDrawer.classList.toggle('hidden', !isHidden);
+                pubBtn.classList.toggle('active', isHidden);
+            });
+        }
+
+        const pubSearchInput = document.getElementById('publisher-drawer-search-input');
+        if (pubSearchInput) {
+            pubSearchInput.addEventListener('input', (e) => {
+                this.renderSequentialPublishersDrawer(e.target.value.trim());
+            });
+        }
+
+        // 4. شريط التبويبات الأفقي الكامل (100% عرض بدون أي تغطية)
+        const tabButtons = document.querySelectorAll('#store-tabs-ribbon .store-tab-pill');
+        tabButtons.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                tabButtons.forEach((b) => b.classList.remove('active'));
+                btn.classList.add('active');
+                this.state.storeFilters.tab = btn.getAttribute('data-tab-filter') || 'all';
+                this.renderStoreBooksGrid();
+            });
+        });
+
+        // 5. زر إلغاء الفلاتر النشطة
+        const clearFilterBtn = document.getElementById('btn-clear-store-filters');
+        if (clearFilterBtn) {
+            clearFilterBtn.addEventListener('click', () => {
+                this.state.storeFilters = {
+                    search: '',
+                    tab: 'all',
+                    category: 'all',
+                    publisherId: 'all'
+                };
+                if (mainSearchInput) mainSearchInput.value = '';
+                tabButtons.forEach((b) => b.classList.toggle('active', b.getAttribute('data-tab-filter') === 'all'));
+                this.renderSequentialCategoriesDrawer();
+                this.renderSequentialPublishersDrawer('');
+                this.renderStoreBooksGrid();
+            });
+        }
+
+        // 6. بدء الاستماع السحابي للكتب ودور النشر
+        this.subscribeToBooksAndPublishers();
+    },
+
+    // ========================================================================
+    // 2. المزامنة اللحظية للكتب ودور النشر من Firestore
+    // ========================================================================
+    subscribeToBooksAndPublishers: function () {
+        if (!window.db) return;
+
+        // أ) الاستماع لمجموعة دور النشر
+        if (this.state.unsubscribers.publishers) this.state.unsubscribers.publishers();
+        this.state.unsubscribers.publishers = window.db
+            .collection(window.SAFAQAT_COLLECTIONS.PUBLISHERS)
+            .onSnapshot((snap) => {
+                const pubs = [];
+                snap.forEach((doc) => pubs.push({ id: doc.id, ...doc.data() }));
+                this.state.publishers = pubs;
+                this.renderSequentialPublishersDrawer('');
+            }, (err) => {
+                console.warn("⚠️ تعذر جلب دور النشر:", err);
+            });
+
+        // ب) الاستماع لمجموعة الكتب
+        if (this.state.unsubscribers.books) this.state.unsubscribers.books();
+        this.state.unsubscribers.books = window.db
+            .collection(window.SAFAQAT_COLLECTIONS.BOOKS)
+            .onSnapshot((snap) => {
+                const booksList = [];
+                snap.forEach((doc) => booksList.push({ id: doc.id, ...doc.data() }));
+
+                // ترتيب الكتب بحيث تظهر الأحدث أولاً
+                booksList.sort((a, b) => {
+                    const tA = a.createdAt && a.createdAt.seconds ? a.createdAt.seconds : 0;
+                    const tB = b.createdAt && b.createdAt.seconds ? b.createdAt.seconds : 0;
+                    return tB - tA;
+                });
+
+                this.state.books = booksList;
+                this.renderSequentialCategoriesDrawer();
+                this.renderStoreBooksGrid();
+
+                // تحديث البحث الذكي للكتب في المجتمع الأدبي
+                if (typeof this.refreshCommunityBookPickerData === 'function') {
+                    this.refreshCommunityBookPickerData();
+                }
+            }, (err) => {
+                console.error("❌ خطأ في مزامنة الكتب:", err);
+            });
+    },
+
+    // ========================================================================
+    // 3. بناء درج التصنيفات التسلسلي الأنيق ودرج دور النشر الذكي
+    // ========================================================================
+    renderSequentialCategoriesDrawer: function () {
+        const drawer = document.getElementById('sequential-categories-drawer');
+        const labelEl = document.getElementById('categories-btn-label');
+        if (!drawer) return;
+
+        const books = this.state.books || [];
+        const categoryCounts = {};
+
+        books.forEach((b) => {
+            const cat = (b.category || 'أدب عام').trim();
+            categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
+        });
+
+        const categories = Object.keys(categoryCounts).sort();
+        const activeCat = this.state.storeFilters.category;
+
+        if (labelEl) {
+            labelEl.textContent = activeCat === 'all' ? `كل التصنيفات (${categories.length})` : activeCat;
+        }
+
+        let html = `
+            <button type="button" class="category-chip-item ${activeCat === 'all' ? 'active' : ''}" data-cat-select="all">
+                <span>جميع التصنيفات</span>
+                <strong>(${books.length})</strong>
+            </button>
+        `;
+
+        categories.forEach((cat) => {
+            const isSelected = activeCat === cat;
+            html += `
+                <button type="button" class="category-chip-item ${isSelected ? 'active' : ''}" data-cat-select="${this.escapeHtml(cat)}">
+                    <span>${this.escapeHtml(cat)}</span>
+                    <strong>(${categoryCounts[cat]})</strong>
+                </button>
+            `;
+        });
+
+        drawer.innerHTML = html;
+
+        drawer.querySelectorAll('[data-cat-select]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                this.state.storeFilters.category = btn.getAttribute('data-cat-select');
+                this.renderSequentialCategoriesDrawer();
+                this.renderStoreBooksGrid();
+                // إغلاق الدرج تلقائياً بعد الاختيار لتجربة مستخدم نظيفة
+                drawer.classList.add('hidden');
+            });
+        });
+    },
+
+    renderSequentialPublishersDrawer: function (searchKeyword = '') {
+        const listContainer = document.getElementById('publishers-chips-list');
+        if (!listContainer) return;
+
+        // استخراج دور النشر من المجموعة المخصصة ومن الكتب المرفوعة
+        const pubMap = new Map();
+        pubMap.set('default_safaqat', { id: 'default_safaqat', name: 'دار صفقات كتابية للنشر والتوزيع' });
+
+        (this.state.publishers || []).forEach((p) => {
+            if (p.name) pubMap.set(p.id, { id: p.id, name: p.name });
+        });
+
+        (this.state.books || []).forEach((b) => {
+            if (b.publisherName) {
+                const key = b.publisherId || b.publisherName;
+                if (!pubMap.has(key)) {
+                    pubMap.set(key, { id: key, name: b.publisherName });
+                }
+            }
+        });
+
+        const allPubs = Array.from(pubMap.values());
+        const q = searchKeyword.toLowerCase();
+        const filteredPubs = q
+            ? allPubs.filter((p) => p.name.toLowerCase().includes(q))
+            : allPubs;
+
+        const activePub = this.state.storeFilters.publisherId;
+
+        let html = `
+            <button type="button" class="category-chip-item ${activePub === 'all' ? 'active' : ''}" data-pub-select="all">
+                <i class="fa-solid fa-globe"></i> كل دور النشر
+            </button>
+        `;
+
+        filteredPubs.forEach((pub) => {
+            const isSelected = activePub === pub.id || activePub === pub.name;
+            html += `
+                <button type="button" class="category-chip-item ${isSelected ? 'active' : ''}" data-pub-select="${this.escapeHtml(pub.id)}" data-pub-name="${this.escapeHtml(pub.name)}">
+                    <i class="fa-solid fa-building-columns"></i> ${this.escapeHtml(pub.name)}
+                </button>
+            `;
+        });
+
+        listContainer.innerHTML = html;
+
+        listContainer.querySelectorAll('[data-pub-select]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const val = btn.getAttribute('data-pub-select');
+                this.state.storeFilters.publisherId = val;
+                this.renderSequentialPublishersDrawer(searchKeyword);
+                this.renderStoreBooksGrid();
+                const pubDrawer = document.getElementById('sequential-publishers-drawer');
+                if (pubDrawer) pubDrawer.classList.add('hidden');
+            });
+        });
+    },
+
+    // ========================================================================
+    // 4. رسم شبكة الكتب + إدارة المخزون الورقي والرقمي + دمج إعلانات AdMob الشفافة
+    // ========================================================================
+    renderStoreBooksGrid: function () {
+        const gridEl = document.getElementById('store-books-grid');
+        const activeBanner = document.getElementById('active-store-filter-banner');
+        const activeBannerText = document.getElementById('active-filter-text');
+        if (!gridEl) return;
+
+        const filters = this.state.storeFilters;
+        let filtered = [...(this.state.books || [])];
+
+        // 1. تصفية حسب البحث النصي الذكي
+        if (filters.search) {
+            const q = filters.search.toLowerCase();
+            filtered = filtered.filter((b) => {
+                const haystack = `${b.title || ''} ${b.author || ''} ${b.category || ''} ${b.publisherName || ''} ${b.description || ''}`.toLowerCase();
+                return haystack.includes(q);
+            });
+        }
+
+        // 2. تصفية حسب شريط التبويبات الأفقي
+        if (filters.tab === 'paper') {
+            filtered = filtered.filter((b) => !b.isDigitalOnly);
+        } else if (filters.tab === 'digital') {
+            filtered = filtered.filter((b) => b.isDigitalOnly === true || Boolean(b.pdfDirectUrl) || Boolean(b.digitalContent));
+        } else if (filters.tab === 'vip') {
+            filtered = filtered.filter((b) => b.includedInVip !== false);
+        } else if (filters.tab === 'bestseller') {
+            filtered = filtered.filter((b) => b.isBestseller === true || (b.salesCount && b.salesCount > 5));
+        } else if (filters.tab === 'recent') {
+            filtered = filtered.slice(0, 12);
+        }
+
+        // 3. تصفية حسب التصنيف
+        if (filters.category && filters.category !== 'all') {
+            filtered = filtered.filter((b) => (b.category || 'أدب عام').trim() === filters.category);
+        }
+
+        // 4. تصفية حسب دار النشر
+        if (filters.publisherId && filters.publisherId !== 'all') {
+            filtered = filtered.filter((b) => b.publisherId === filters.publisherId || b.publisherName === filters.publisherId);
+        }
+
+        // إظهار أو إخفاء شريط الفلتر النشط
+        if (activeBanner && activeBannerText) {
+            const hasCustomFilter = filters.category !== 'all' || filters.publisherId !== 'all' || Boolean(filters.search);
+            activeBanner.classList.toggle('hidden', !hasCustomFilter);
+            if (hasCustomFilter) {
+                const parts = [];
+                if (filters.category !== 'all') parts.push(`التصنيف: ${filters.category}`);
+                if (filters.publisherId !== 'all') parts.push(`الدار: ${filters.publisherId}`);
+                if (filters.search) parts.push(`البحث: "${filters.search}"`);
+                activeBannerText.textContent = `🔍 نتائج التصفية (${filtered.length} كتاب) — ${parts.join(' | ')}`;
+            }
+        }
+
+        if (filtered.length === 0) {
+            gridEl.innerHTML = `
+                <div class="glass-section-card" style="grid-column: 1 / -1; text-align: center; padding: 42px 20px;">
+                    <i class="fa-solid fa-book-open" style="font-size: 2.5rem; color: var(--accent-gold); margin-bottom: 12px;"></i>
+                    <h3 style="font-size: 1.05rem; margin-bottom: 6px;">لا توجد إصدارات مطابقة للبحث الحالي</h3>
+                    <p style="font-size: 0.82rem; color: var(--text-muted);">جرب البحث بكلمات أخرى أو استعرض جميع التصنيفات.</p>
+                </div>
+            `;
+            return;
+        }
+
+        // بناء بطاقات الكتب مع دمج بطاقات إعلانات Google AdMob الشفافة بمسافات مدروسة
+        const htmlParts = [];
+        filtered.forEach((book, index) => {
+            htmlParts.push(this.createBookCardHtml(book));
+
+            // فحص خوارزمية إعلانات AdMob النظيفة (من الجزء الثالث)
+            if (typeof this.shouldInsertNativeAd === 'function' && this.shouldInsertNativeAd('store', index + 1)) {
+                htmlParts.push(this.createNativeAdSlotHtml(`store_ad_${index}`));
+            }
+        });
+
+        gridEl.innerHTML = htmlParts.join('');
+    },
+
+    /**
+     * توليد بطاقة الكتاب وفق القواعد الصارمة:
+     * - زر "إضافة إلى السلة" يظهر دائماً للنسخ الورقية (حتى لو كان الكتاب متاحاً للقراءة الرقمية).
+     * - يُخفى زر السلة تماماً إذا كان الكتاب معيناً كـ "نسخة رقمية فقط" (isDigitalOnly === true).
+     * - عداد النسخ المطبوعة (printStock) اختياري تماماً: يظهر فقط إذا أدخلت الإدارة رقماً فيه.
+     */
+    createBookCardHtml: function (book) {
+        const isDigitalOnly = book.isDigitalOnly === true;
+        const hasDigitalEdition = isDigitalOnly || Boolean(book.pdfDirectUrl) || Boolean(book.digitalContent) || book.hasDigitalEdition !== false;
+
+        // فحص عداد النسخ المطبوعة الاختياري (إذا تركته الإدارة فارغاً لا يظهر شيء)
+        const hasExplicitPrintStock = !isDigitalOnly && book.printStock !== undefined && book.printStock !== null && String(book.printStock).trim() !== '';
+        const printStockNum = hasExplicitPrintStock ? parseInt(book.printStock, 10) : null;
+        const isPaperOutOfStock = hasExplicitPrintStock && !isNaN(printStockNum) && printStockNum <= 0;
+
+        // الأسعار المحولة بالعملة المفضلة للمستخدم
+        const paperPriceFormatted = !isDigitalOnly ? window.SafaqatConfig.formatBookPrice(book, 'paper') : '';
+        const digitalPriceFormatted = hasDigitalEdition ? window.SafaqatConfig.formatBookPrice(book, 'digital') : '';
+
+        const coverUrl = book.coverUrl || 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&w=600&q=80';
+        const safeId = this.escapeHtml(book.id);
+
+        return `
+            <article class="book-glass-card" data-book-id="${safeId}">
+                <div class="book-cover-wrapper" onclick="SafaqatApp.openBookDetailsModal('${safeId}')">
+                    <img src="${this.escapeHtml(coverUrl)}" alt="${this.escapeHtml(book.title)}" loading="lazy">
+                    
+                    <div class="book-badges-overlay">
+                        ${isDigitalOnly ? `
+                            <span class="badge-pill badge-digital-only">
+                                <i class="fa-solid fa-tablet-screen-button"></i> نشر رقمي فقط
+                            </span>
+                        ` : `
+                            <span class="badge-pill badge-paper-available">
+                                <i class="fa-solid fa-book"></i> متوفر ورقياً
+                            </span>
+                        `}
+
+                        ${hasExplicitPrintStock && !isNaN(printStockNum) ? `
+                            <span class="badge-pill badge-stock-count">
+                                ${printStockNum > 0 ? `${printStockNum} نسخة مطبوعة` : 'نفدت الطبعة'}
+                            </span>
+                        ` : ''}
+                    </div>
+                </div>
+
+                <div class="book-card-body">
+                    <h3 class="book-card-title" onclick="SafaqatApp.openBookDetailsModal('${safeId}')" title="${this.escapeHtml(book.title)}">
+                        ${this.escapeHtml(book.title)}
+                    </h3>
+                    <div class="book-card-author">
+                        <i class="fa-solid fa-feather" style="color: var(--accent-gold); font-size: 0.7rem;"></i>
+                        ${this.escapeHtml(book.author || 'مؤلف معتمد')}
+                    </div>
+
+                    <div class="book-pricing-row">
+                        ${!isDigitalOnly ? `
+                            <div>
+                                <div class="price-tag-main">${paperPriceFormatted}</div>
+                                <div class="price-tag-sub">نسخة ورقية</div>
+                            </div>
+                        ` : ''}
+                        ${hasDigitalEdition ? `
+                            <div style="text-align: left;">
+                                <div class="price-tag-main" style="font-size: 0.84rem; color: #60a5fa;">${digitalPriceFormatted}</div>
+                                <div class="price-tag-sub">نسخة رقمية</div>
+                            </div>
+                        ` : ''}
+                    </div>
+
+                    <div class="book-card-actions">
+                        ${!isDigitalOnly ? `
+                            <button type="button" class="btn-add-paper-cart" 
+                                    ${isPaperOutOfStock ? 'disabled style="opacity:0.5; cursor:not-allowed;"' : `onclick="SafaqatApp.addToPaperCart('${safeId}')"`}>
+                                <i class="fa-solid fa-cart-plus"></i>
+                                <span>${isPaperOutOfStock ? 'نفدت النسخ المطبوعة' : 'إضافة إلى السلة (ورقي)'}</span>
+                            </button>
+                        ` : ''}
+
+                        ${hasDigitalEdition ? `
+                            <button type="button" class="btn-read-digital-app" onclick="SafaqatApp.handleReadOrBuyDigitalBook('${safeId}')">
+                                <i class="fa-solid fa-book-open-reader"></i>
+                                <span>قراءة النسخة الرقمية</span>
+                            </button>
+                        ` : ''}
+                    </div>
+                </div>
+            </article>
+        `;
+    },
+
+    // ========================================================================
+    // 5. نافذة تفاصيل الكتاب الكاملة (Book Details Modal)
+    // ========================================================================
+    openBookDetailsModal: function (bookId) {
+        const book = (this.state.books || []).find((b) => b.id === bookId);
+        if (!book) {
+            this.showToast('⚠️ لم يتم العثور على بيانات هذا الكتاب');
+            return;
+        }
+
+        const modal = document.getElementById('modal-book-details');
+        const contentBox = document.getElementById('modal-book-details-content');
+        if (!modal || !contentBox) return;
+
+        const isDigitalOnly = book.isDigitalOnly === true;
+        const hasDigitalEdition = isDigitalOnly || Boolean(book.pdfDirectUrl) || Boolean(book.digitalContent) || book.hasDigitalEdition !== false;
+        const hasExplicitPrintStock = !isDigitalOnly && book.printStock !== undefined && book.printStock !== null && String(book.printStock).trim() !== '';
+        const printStockNum = hasExplicitPrintStock ? parseInt(book.printStock, 10) : null;
+        const isPaperOutOfStock = hasExplicitPrintStock && !isNaN(printStockNum) && printStockNum <= 0;
+
+        const paperPriceFormatted = !isDigitalOnly ? window.SafaqatConfig.formatBookPrice(book, 'paper') : '';
+        const digitalPriceFormatted = hasDigitalEdition ? window.SafaqatConfig.formatBookPrice(book, 'digital') : '';
+        const coverUrl = book.coverUrl || 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&w=600&q=80';
+        const safeId = this.escapeHtml(book.id);
+
+        contentBox.innerHTML = `
+            <div class="section-header-row">
+                <h3 style="font-size: 1.05rem; font-weight: 800; color: var(--accent-gold);">
+                    <i class="fa-solid fa-circle-info"></i> بطاقة تعريف الإصدار
+                </h3>
+                <button type="button" onclick="document.getElementById('modal-book-details').classList.add('hidden')" class="header-icon-btn">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 140px 1fr; gap: 16px; margin-bottom: 16px;">
+                <div style="border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--border-gold); aspect-ratio: 2/3;">
+                    <img src="${this.escapeHtml(coverUrl)}" alt="${this.escapeHtml(book.title)}" style="width: 100%; height: 100%; object-fit: cover;">
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                    <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                        <span class="badge-pill badge-stock-count">${this.escapeHtml(book.category || 'أدب ورواية')}</span>
+                        ${isDigitalOnly ? `<span class="badge-pill badge-digital-only">نشر رقمي حصري</span>` : `<span class="badge-pill badge-paper-available">متاح ورقياً</span>`}
+                        ${book.includedInVip !== false ? `<span class="badge-pill" style="background: rgba(212,175,55,0.2); color: var(--accent-gold);"><i class="fa-solid fa-crown"></i> مشمول بباقة VIP</span>` : ''}
+                    </div>
+
+                    <h2 style="font-size: 1.2rem; font-weight: 800;">${this.escapeHtml(book.title)}</h2>
+                    <div style="font-size: 0.85rem; color: var(--text-secondary);">
+                        <strong>المؤلف:</strong> ${this.escapeHtml(book.author || 'غير محدد')}
+                    </div>
+                    <div style="font-size: 0.82rem; color: var(--text-muted);">
+                        <strong>دار النشر:</strong> ${this.escapeHtml(book.publisherName || 'دار صفقات كتابية للنشر والتوزيع')}
+                    </div>
+
+                    ${hasExplicitPrintStock && !isNaN(printStockNum) ? `
+                        <div style="font-size: 0.82rem; color: ${printStockNum > 0 ? 'var(--accent-emerald)' : 'var(--accent-danger)'}; font-weight: 700;">
+                            <i class="fa-solid fa-boxes-stacked"></i> المخزون الورقي المتاح: ${printStockNum > 0 ? `${printStockNum} نسخة مطبوعة` : 'نفدت النسخ المطبوعة حالياً'}
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+
+            <div style="background: var(--bg-input); border: 1px solid var(--border-glass); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 16px;">
+                <h4 style="font-size: 0.86rem; color: var(--accent-gold); margin-bottom: 6px;">نبذة عن الكتاب:</h4>
+                <p style="font-size: 0.88rem; color: var(--text-secondary); line-height: 1.8; white-space: pre-line;">${this.escapeHtml(book.description || 'إصدار أدبي مميز متوفر عبر منصة صفقات كتابية.')}</p>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+                ${!isDigitalOnly ? `
+                    <button type="button" class="btn-add-paper-cart" style="padding: 12px; font-size: 0.9rem;"
+                            ${isPaperOutOfStock ? 'disabled style="opacity:0.5; cursor:not-allowed;"' : `onclick="SafaqatApp.addToPaperCart('${safeId}'); document.getElementById('modal-book-details').classList.add('hidden');"`}>
+                        <i class="fa-solid fa-bag-shopping"></i>
+                        <span>${isPaperOutOfStock ? 'نفدت النسخ المطبوعة' : `طلب النسخة الورقية (${paperPriceFormatted}) — إضافة للسلة`}</span>
+                    </button>
+                ` : ''}
+
+                ${hasDigitalEdition ? `
+                    <button type="button" class="btn-read-digital-app" style="padding: 12px; font-size: 0.9rem;"
+                            onclick="document.getElementById('modal-book-details').classList.add('hidden'); SafaqatApp.handleReadOrBuyDigitalBook('${safeId}');">
+                        <i class="fa-solid fa-book-open-reader"></i>
+                        <span>فتح النسخة الرقمية المحمية (${digitalPriceFormatted})</span>
+                    </button>
+                ` : ''}
+            </div>
+        `;
+
+        modal.classList.remove('hidden');
+    },
+
+    // ========================================================================
+    // 6. محرك البحث الذكي الفوري الموحد لجميع القوائم والحقول (Universal Smart Search Picker)
+    // يُستخدم في ربط المنشور بكتاب في المجتمع، واختيار دور النشر أو الكتب في لوحة الإدارة
+    // ========================================================================
+    attachSmartSearchPicker: function (config) {
+        const inputEl = document.getElementById(config.inputId);
+        const dropdownEl = document.getElementById(config.dropdownId);
+        const badgeEl = document.getElementById(config.selectedBadgeId);
+        const hiddenInputEl = document.getElementById(config.hiddenInputId);
+        const clearBtnEl = document.getElementById(config.clearBtnId);
+
+        if (!inputEl || !dropdownEl) return;
+
+        const renderOptions = (queryText) => {
+            const items = typeof config.getItems === 'function' ? config.getItems() : [];
+            const q = (queryText || '').trim().toLowerCase();
+
+            // إذا لم يكتب المستخدم شيئاً بعد، لا نفتح قائمة طويلة مزعجة، بل ننتظر كتابة حرف أو النقر المركز
+            const matched = q
+                ? items.filter((item) => {
+                    const searchStr = `${item.title || ''} ${item.subtitle || ''} ${item.extra || ''}`.toLowerCase();
+                    return searchStr.includes(q);
+                })
+                : items.slice(0, 8);
+
+            if (matched.length === 0) {
+                dropdownEl.innerHTML = `
+                    <div style="padding: 12px; font-size: 0.8rem; color: var(--text-muted); text-align: center;">
+                        لا توجد نتائج مطابقة لـ "${this.escapeHtml(queryText)}"
+                    </div>
+                `;
+                dropdownEl.classList.remove('hidden');
+                return;
+            }
+
+            dropdownEl.innerHTML = matched.slice(0, 12).map((item) => `
+                <div class="smart-picker-option" data-picker-id="${this.escapeHtml(item.id)}" data-picker-title="${this.escapeHtml(item.title)}">
+                    <div>
+                        <div style="font-weight: 700; color: var(--text-primary);">${this.escapeHtml(item.title)}</div>
+                        ${item.subtitle ? `<div style="font-size: 0.72rem; color: var(--text-muted);">${this.escapeHtml(item.subtitle)}</div>` : ''}
+                    </div>
+                    <i class="fa-solid fa-plus-circle" style="color: var(--accent-gold);"></i>
+                </div>
+            `).join('');
+
+            dropdownEl.classList.remove('hidden');
+
+            dropdownEl.querySelectorAll('.smart-picker-option').forEach((opt) => {
+                opt.addEventListener('click', () => {
+                    const selectedId = opt.getAttribute('data-picker-id');
+                    const selectedTitle = opt.getAttribute('data-picker-title');
+
+                    if (hiddenInputEl) hiddenInputEl.value = selectedId;
+                    inputEl.value = '';
+                    dropdownEl.classList.add('hidden');
+
+                    if (badgeEl) {
+                        badgeEl.innerHTML = `
+                            <i class="fa-solid fa-book"></i>
+                            <span>تم الاختيار: ${this.escapeHtml(selectedTitle)}</span>
+                            <button type="button" style="color: var(--accent-danger); margin-right: 6px;" title="إلغاء الربط">
+                                <i class="fa-solid fa-xmark"></i>
+                            </button>
+                        `;
+                        badgeEl.classList.remove('hidden');
+                        badgeEl.querySelector('button').addEventListener('click', () => clearSelection());
+                    }
+
+                    if (clearBtnEl) clearBtnEl.classList.remove('hidden');
+                    if (typeof config.onSelect === 'function') {
+                        config.onSelect({ id: selectedId, title: selectedTitle });
+                    }
+                });
+            });
+        };
+
+        const clearSelection = () => {
+            if (hiddenInputEl) hiddenInputEl.value = '';
+            inputEl.value = '';
+            dropdownEl.classList.add('hidden');
+            if (badgeEl) {
+                badgeEl.innerHTML = '';
+                badgeEl.classList.add('hidden');
+            }
+            if (clearBtnEl) clearBtnEl.classList.add('hidden');
+            if (typeof config.onClear === 'function') config.onClear();
+        };
+
+        inputEl.addEventListener('input', (e) => {
+            const val = e.target.value;
+            if (val.trim().length > 0) {
+                renderOptions(val);
+            } else {
+                dropdownEl.classList.add('hidden');
+            }
+        });
+
+        inputEl.addEventListener('focus', () => {
+            if (inputEl.value.trim().length > 0) {
+                renderOptions(inputEl.value);
+            }
+        });
+
+        if (clearBtnEl) {
+            clearBtnEl.addEventListener('click', () => clearSelection());
+        }
+
+        // إغلاق القائمة عند النقر خارجها
+        document.addEventListener('click', (e) => {
+            if (!inputEl.contains(e.target) && !dropdownEl.contains(e.target)) {
+                dropdownEl.classList.add('hidden');
+            }
+        });
+    }
+
+});

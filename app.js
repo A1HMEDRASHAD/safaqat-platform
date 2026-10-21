@@ -3514,3 +3514,1151 @@ window.sqHandleNotifClick = function(targetId) {
   if (!targetId || targetId === 'null') return;
   window.sqOpenSinglePost(targetId);
 };
+/* =========================================================
+   المحرك البرمجي الشامل — الإصدار 1.8
+   File: app.js (الجزء 5 من 5 والأخير)
+   يشمل: غرفة القيادة، لوحة التسويات المالية الدقيقة (للطلبات المسلمة فقط)،
+         الحماية السيادية للصلاحيات والعمولات، المساعد الذكي "راوي"، وتشغيل المنصة
+   ========================================================= */
+
+// =========================================================
+// 🛡️ غرفة قيادة الإدارة، التسويات المالية، وإدارة دور النشر والموظفين
+// =========================================================
+window.sqApplyDynamicDarSettings = function(data) {
+  if (!data) return;
+  if (data.appName && data.appName.trim().length >= 2) {
+    APP_NAME = data.appName.trim();
+    document.querySelectorAll('.sq-dyn-app-name').forEach(el => el.textContent = APP_NAME);
+  }
+  if (data.logoUrl && data.logoUrl.startsWith('http')) {
+    APP_LOGO_URL = data.logoUrl.trim();
+    const hLogo = document.getElementById('sq-header-logo-img'); if (hLogo) hLogo.src = APP_LOGO_URL;
+    const fav = document.getElementById('sq-favicon-link'); if (fav) fav.href = APP_LOGO_URL;
+    const appIc = document.getElementById('sq-apple-icon-link'); if (appIc) appIc.href = APP_LOGO_URL;
+    window.sqRefreshPwaManifest();
+  }
+  if (data.whatsappNumber && data.whatsappNumber.trim().length >= 7) {
+    DAR_WHATSAPP_NUMBER = data.whatsappNumber.trim();
+  }
+  if (data.defaultCurrency && data.defaultCurrency.trim().length >= 1) {
+    DEFAULT_CURRENCY = data.defaultCurrency.trim();
+  }
+  if (data.customBookCategories && typeof data.customBookCategories === 'object') {
+    AppState.customBookCategories = data.customBookCategories;
+    if (AppState.activeMainView === 'store') window.sqRenderLibrarySection();
+  }
+};
+
+// حساب التسويات المالية الدقيقة (حصرياً للطلبات المكتملة التي تم تسليمها Completed)
+window.sqCalculateFinancialSettlements = function(filterPubUid = null) {
+  const completedOrders = (AppState.ordersList || []).filter(o => o.status === 'completed');
+  const ledgerByPub = {};
+
+  // تهيئة كافة دور النشر المعتمدة في الدفتر المالي
+  Object.keys(AppState.allUsers).forEach(uid => {
+    const u = AppState.allUsers[uid];
+    if (u && u.isPublisher && !window.sqIsSuperAdminEmail(u.email)) {
+      if (filterPubUid && filterPubUid !== uid) return;
+      ledgerByPub[uid] = {
+        pubUid: uid,
+        pubName: getRealName(uid, u.displayName),
+        pubPhoto: getRealPhoto(uid, u.photoURL),
+        pubWhatsapp: u.publisherWhatsapp || '',
+        commissionRate: (u.commissionRate !== undefined && !isNaN(Number(u.commissionRate))) ? Number(u.commissionRate) : 10,
+        deliveredOrdersCount: 0,
+        deliveredBooksQty: 0,
+        grossSalesSAR: 0,
+        platformCommissionSAR: 0,
+        netPublisherSAR: 0,
+        invoices: []
+      };
+    }
+  });
+
+  completedOrders.forEach(ord => {
+    const items = Array.isArray(ord.items) ? ord.items : [];
+    const pubSubtotals = {};
+
+    items.forEach(it => {
+      const pUid = it.publisherUid || 'DAR_MAIN';
+      if (pUid === 'DAR_MAIN' || window.sqIsSuperAdminUid(pUid)) return;
+      if (filterPubUid && filterPubUid !== pUid) return;
+
+      if (!ledgerByPub[pUid]) {
+        const u = AppState.allUsers[pUid] || {};
+        ledgerByPub[pUid] = {
+          pubUid: pUid,
+          pubName: getRealName(pUid, it.publisherName || u.displayName || 'دار نشر'),
+          pubPhoto: getRealPhoto(pUid, u.photoURL),
+          pubWhatsapp: u.publisherWhatsapp || '',
+          commissionRate: (u.commissionRate !== undefined && !isNaN(Number(u.commissionRate))) ? Number(u.commissionRate) : 10,
+          deliveredOrdersCount: 0,
+          deliveredBooksQty: 0,
+          grossSalesSAR: 0,
+          platformCommissionSAR: 0,
+          netPublisherSAR: 0,
+          invoices: []
+        };
+      }
+
+      const qty = Number(it.qty) || 1;
+      const unitSAR = (it.unitPriceSAR !== undefined)
+        ? Number(it.unitPriceSAR)
+        : (Number(it.priceSAR || it.price) || 0);
+      const lineSAR = Number((unitSAR * qty).toFixed(2));
+
+      if (!pubSubtotals[pUid]) {
+        pubSubtotals[pUid] = { qty: 0, grossSAR: 0, titles: [] };
+      }
+      pubSubtotals[pUid].qty += qty;
+      pubSubtotals[pUid].grossSAR += lineSAR;
+      pubSubtotals[pUid].titles.push(`${it.title} (×${qty})`);
+    });
+
+    Object.keys(pubSubtotals).forEach(pUid => {
+      const sub = pubSubtotals[pUid];
+      const pubEntry = ledgerByPub[pUid];
+      const rate = pubEntry.commissionRate;
+      const commSAR = Number(((sub.grossSAR * rate) / 100).toFixed(2));
+      const netSAR = Number((sub.grossSAR - commSAR).toFixed(2));
+
+      pubEntry.deliveredOrdersCount += 1;
+      pubEntry.deliveredBooksQty += sub.qty;
+      pubEntry.grossSalesSAR = Number((pubEntry.grossSalesSAR + sub.grossSAR).toFixed(2));
+      pubEntry.platformCommissionSAR = Number((pubEntry.platformCommissionSAR + commSAR).toFixed(2));
+      pubEntry.netPublisherSAR = Number((pubEntry.netPublisherSAR + netSAR).toFixed(2));
+
+      pubEntry.invoices.push({
+        orderId: ord.id,
+        orderCode: ord.orderCode || 'SK-000000',
+        buyerName: ord.buyerName || 'مشتري',
+        buyerPhone: ord.buyerPhone || '',
+        city: `${ord.country || ''} - ${ord.city || ''}`,
+        createdAt: ord.createdAt || 0,
+        completedAt: ord.completedAt || ord.updatedAt || ord.createdAt || Date.now(),
+        titlesText: sub.titles.join(' + '),
+        qty: sub.qty,
+        grossSAR: Number(sub.grossSAR.toFixed(2)),
+        commissionRate: rate,
+        commissionSAR: commSAR,
+        netSAR: netSAR
+      });
+    });
+  });
+
+  return Object.values(ledgerByPub);
+};
+
+window.sqRenderAdminDashboard = function() {
+  const box = document.getElementById('sq-settings-body-content'); if (!box) return;
+  const isSuper = window.sqIsCurrentUserSuperAdmin();
+  const isPubOnly = Boolean(AppState.userData && AppState.userData.isPublisher && !isSuper);
+  const myUid = AppState.currentUser ? AppState.currentUser.uid : '';
+
+  const totalUsers = Object.keys(AppState.allUsers).length;
+  const totalBooks = isPubOnly ? AppState.booksList.filter(b => b.publisherUid === myUid).length : AppState.booksList.length;
+  const totalOrders = isPubOnly
+    ? AppState.ordersList.filter(o => (o.publisherUids || []).includes(myUid) || (o.items || []).some(i => i.publisherUid === myUid)).length
+    : AppState.ordersList.length;
+  const completedOrdersCount = isPubOnly
+    ? AppState.ordersList.filter(o => o.status === 'completed' && ((o.publisherUids || []).includes(myUid) || (o.items || []).some(i => i.publisherUid === myUid))).length
+    : AppState.ordersList.filter(o => o.status === 'completed').length;
+
+  const canManageOrders = window.sqHasPermission('manage_orders');
+  const canManageBooks = window.sqHasPermission('manage_books');
+  const canManageMod = window.sqHasPermission('manage_mod');
+  const canManageSupport = window.sqHasPermission('manage_support');
+  const canManageAds = window.sqHasPermission('manage_ads');
+  const canSeeSettlements = isSuper || isPubOnly;
+
+  box.innerHTML = `
+    <div class="sq-hub-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+        <h3 style="font-size:16px; color:var(--text-main);">
+          <i class="fa-solid fa-shield-halved" style="color:var(--accent);"></i>
+          ${isPubOnly ? 'لوحة إدارة دار النشر والمبيعات والتسويات' : 'غرفة القيادة السيادية والتسويات المالية'}
+        </h3>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          ${canManageBooks ? `<button class="sq-btn sq-btn-gold" style="padding:6px 12px!important; font-size:11.5px!important;" onclick="window.sqOpenBookStudio(null)"><i class="fa-solid fa-book-medical"></i> + رفع كتاب</button>` : ''}
+          ${canManageAds ? `<button class="sq-btn sq-btn-outline" style="padding:6px 12px!important; font-size:11.5px!important;" onclick="window.sqOpenEventStudio(null)"><i class="fa-solid fa-calendar-plus" style="color:var(--accent);"></i> + حدث/معرض</button>` : ''}
+        </div>
+      </div>
+
+      <div class="sq-stats-grid">
+        <div class="sq-stat-box"><span class="sq-stat-num">${totalOrders}</span><span class="sq-stat-lbl">إجمالي الفواتير</span></div>
+        <div class="sq-stat-box"><span class="sq-stat-num" style="color:var(--success);">${completedOrdersCount}</span><span class="sq-stat-lbl">طلبات تم تسليمها</span></div>
+        <div class="sq-stat-box"><span class="sq-stat-num">${totalBooks}</span><span class="sq-stat-lbl">الكتب المنشورة</span></div>
+        <div class="sq-stat-box"><span class="sq-stat-num">${totalUsers}</span><span class="sq-stat-lbl">أعضاء المنصة</span></div>
+      </div>
+
+      <div class="sq-admin-tabs">
+        <button class="sq-admin-tab ${AppState.adminCurrentTab === 'help' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('help')"><i class="fa-solid fa-graduation-cap"></i> التعليمات</button>
+        ${canManageOrders ? `<button class="sq-admin-tab ${AppState.adminCurrentTab === 'orders' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('orders')"><i class="fa-solid fa-file-invoice-dollar"></i> الفواتير (${totalOrders})</button>` : ''}
+        ${canSeeSettlements ? `<button class="sq-admin-tab ${AppState.adminCurrentTab === 'settlements' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('settlements')"><i class="fa-solid fa-scale-balanced" style="color:var(--accent);"></i> التسويات المالية والعمولات</button>` : ''}
+        ${canManageAds ? `<button class="sq-admin-tab ${AppState.adminCurrentTab === 'ads' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('ads')"><i class="fa-solid fa-calendar-star"></i> الأحداث (${AppState.eventsList.length})</button>` : ''}
+        ${canManageSupport ? `<button class="sq-admin-tab ${AppState.adminCurrentTab === 'tickets' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('tickets')"><i class="fa-solid fa-headset"></i> التذاكر (${AppState.ticketsList.length})</button>` : ''}
+        ${canManageMod ? `<button class="sq-admin-tab ${AppState.adminCurrentTab === 'reports' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('reports')"><i class="fa-solid fa-flag"></i> البلاغات</button>` : ''}
+        ${isSuper ? `<button class="sq-admin-tab ${AppState.adminCurrentTab === 'staff' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('staff')"><i class="fa-solid fa-user-shield"></i> الصلاحيات ودور النشر</button>` : ''}
+        ${isSuper ? `<button class="sq-admin-tab ${AppState.adminCurrentTab === 'dar_cfg' ? 'active' : ''}" onclick="window.sqSwitchAdminSubTab('dar_cfg')"><i class="fa-solid fa-sliders"></i> إعدادات المنصة</button>` : ''}
+      </div>
+      <div id="sq-admin-sub-body"></div>
+    </div>
+  `;
+  window.sqRenderAdminSubContent();
+};
+
+window.sqSwitchAdminSubTab = function(sub) {
+  AppState.adminCurrentTab = sub;
+  window.sqRenderAdminDashboard();
+};
+
+window.sqRenderAdminSubContent = function() {
+  const box = document.getElementById('sq-admin-sub-body'); if (!box) return;
+  const isSuper = window.sqIsCurrentUserSuperAdmin();
+  const isPubOnly = Boolean(AppState.userData && AppState.userData.isPublisher && !isSuper);
+  const myUid = AppState.currentUser ? AppState.currentUser.uid : '';
+
+  // 1. قسم المبيعات والفواتير (SK-XXXXXX)
+  if (AppState.adminCurrentTab === 'orders' && window.sqHasPermission('manage_orders')) {
+    box.innerHTML = `
+      <div style="margin-bottom:12px;">
+        <div class="sq-search-wrapper">
+          <i class="fa-solid fa-magnifying-glass" style="color:var(--accent);"></i>
+          <input type="text" id="adm-order-search-in" placeholder="ابحث برقم الفاتورة (مثال: SK-123456) أو اسم المستلم الحقيقي أو هاتفه..." oninput="window.sqFilterAdminOrdersList()">
+        </div>
+      </div>
+      <div id="adm-orders-list-container"></div>
+    `;
+    window.sqFilterAdminOrdersList();
+  }
+
+  // 2. قسم التسويات المالية ودفتر العمولات الموثق (يحتسب فقط الطلبات المسلمة Completed)
+  else if (AppState.adminCurrentTab === 'settlements' && (isSuper || isPubOnly)) {
+    const ledgers = window.sqCalculateFinancialSettlements(isPubOnly ? myUid : null);
+    const totalPlatformProfitSAR = ledgers.reduce((s, l) => s + l.platformCommissionSAR, 0).toFixed(2);
+    const totalDeliveredSalesSAR = ledgers.reduce((s, l) => s + l.grossSalesSAR, 0).toFixed(2);
+    const usdRate = CURRENCY_CONFIG.USD.rateFromSAR;
+    const egpRate = CURRENCY_CONFIG.EGP.rateFromSAR;
+
+    let summaryHeaderHtml = '';
+    if (isSuper) {
+      summaryHeaderHtml = `
+        <div style="background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%); color:#fff; border:1.5px solid var(--accent); border-radius:16px; padding:14px; margin-bottom:14px;">
+          <div style="font-size:13px; font-weight:900; color:#fbbf24; margin-bottom:6px;">
+            <i class="fa-solid fa-scale-balanced"></i> الملخص المالي الموثق لعمولات المنصة (يُحتسب حصرياً على الطلبات المؤكد تسليمها)
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-top:8px;">
+            <div style="background:rgba(255,255,255,0.08); padding:10px; border-radius:12px;">
+              <span style="font-size:11px; color:#cbd5e1; display:block;">إجمالي مبيعات الدور المسلمة:</span>
+              <strong style="font-size:16px; color:#fff;">${totalDeliveredSalesSAR} ر.س</strong>
+              <span style="font-size:10.5px; color:#94a3b8; display:block;">(${(totalDeliveredSalesSAR * usdRate).toFixed(2)} $ | ${Math.round(totalDeliveredSalesSAR * egpRate)} ج.م)</span>
+            </div>
+            <div style="background:rgba(16,185,129,0.18); border:1px solid #10b981; padding:10px; border-radius:12px;">
+              <span style="font-size:11px; color:#a7f3d0; display:block;">صافي مستحقات منصة صفقات (العمولة):</span>
+              <strong style="font-size:17px; color:#fbbf24;">${totalPlatformProfitSAR} ر.س</strong>
+              <span style="font-size:10.5px; color:#ecfdf5; display:block;">(${(totalPlatformProfitSAR * usdRate).toFixed(2)} $ | ${Math.round(totalPlatformProfitSAR * egpRate)} ج.م)</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    if (!ledgers.length) {
+      box.innerHTML = summaryHeaderHtml + `<p style="text-align:center; padding:25px; color:var(--text-muted);">لا توجد دور نشر خارجية معتمدة حالياً في الدفتر المالي.</p>`;
+      return;
+    }
+
+    const ledgersHtml = ledgers.map(l => {
+      const commUSD = (l.platformCommissionSAR * usdRate).toFixed(2);
+      const commEGP = Math.round(l.platformCommissionSAR * egpRate);
+      const grossUSD = (l.grossSalesSAR * usdRate).toFixed(2);
+      const grossEGP = Math.round(l.grossSalesSAR * egpRate);
+
+      const invRowsHtml = l.invoices.length ? l.invoices.map((inv, idx) => `
+        <div style="background:var(--card); border:1px solid var(--border); border-radius:11px; padding:9px 11px; margin-top:6px; font-size:11.5px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:4px; margin-bottom:3px;">
+            <strong style="color:var(--text-main);">${idx + 1}. فاتورة رقم: #${escapeHtml(inv.orderCode)}</strong>
+            <span style="color:var(--success); font-weight:900;"><i class="fa-solid fa-circle-check"></i> تم التسليم: ${sqFormatExactTime(inv.completedAt)}</span>
+          </div>
+          <div style="color:var(--text-muted);">المستلم الحقيقي: <strong>${escapeHtml(inv.buyerName)}</strong> (${escapeHtml(inv.city)}) • الكتب: ${escapeHtml(inv.titlesText)}</div>
+          <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; margin-top:4px; padding-top:4px; border-top:1px dashed var(--border);">
+            <span>قيمة الكتب المسلمة: <strong>${inv.grossSAR} ر.س</strong></span>
+            <span style="color:var(--danger); font-weight:900;">عمولة المنصة (${inv.commissionRate}%): ${inv.commissionSAR} ر.س</span>
+            <span style="color:var(--success); font-weight:800;">صافي الدار: ${inv.netSAR} ر.س</span>
+          </div>
+        </div>
+      `).join('') : `<div style="font-size:11.5px; color:var(--text-muted); padding:8px; text-align:center;">لا توجد فواتير وصلت لمرحلة (تم التسليم) لهذه الدار حتى الآن.</div>`;
+
+      return `
+        <div class="sq-finance-ledger-card">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+            <div style="display:flex; align-items:center; gap:9px; cursor:pointer;" onclick="window.sqViewProfile('${l.pubUid}', 'books')">
+              <img src="${escapeHtml(l.pubPhoto)}" style="width:40px; height:40px; border-radius:10px; object-fit:cover; border:1.5px solid var(--accent);">
+              <div>
+                <strong style="font-size:14px; color:var(--text-main);">${escapeHtml(l.pubName)}</strong>
+                <span class="sq-vbadge publisher"><i class="fa-solid fa-check"></i></span>
+                <div style="font-size:11px; color:var(--text-muted);">نسبة عمولة المنصة المتفق عليها: <strong style="color:var(--accent);">${l.commissionRate}%</strong></div>
+              </div>
+            </div>
+            <div style="display:flex; gap:5px; flex-wrap:wrap;">
+              ${isSuper ? `<button class="sq-btn sq-btn-outline" style="padding:5px 10px!important; font-size:11px!important;" onclick="window.sqSetPublisherCommissionPrompt('${l.pubUid}',${l.commissionRate})"><i class="fa-solid fa-percent" style="color:var(--accent);"></i> تعديل النسبة</button>` : ''}
+              <button class="sq-btn" style="background:#25D366!important; color:#fff!important; padding:5px 11px!important; font-size:11px!important;" onclick="window.sqSendSettlementViaWhatsApp('${l.pubUid}')"><i class="fa-brands fa-whatsapp"></i> إرسال كشف الحساب الموثق</button>
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(125px, 1fr)); gap:6px; background:var(--card); padding:9px; border-radius:12px; border:1px solid var(--border); margin-bottom:8px; text-align:center;">
+            <div>
+              <span style="font-size:10.5px; color:var(--text-muted); display:block;">فواتير مُسلّمة</span>
+              <strong style="font-size:14px;">${l.deliveredOrdersCount} فاتورة (${l.deliveredBooksQty} كتاب)</strong>
+            </div>
+            <div>
+              <span style="font-size:10.5px; color:var(--text-muted); display:block;">إجمالي المبيعات المسلمة</span>
+              <strong style="font-size:13.5px; color:var(--text-main);">${l.grossSalesSAR} ر.س</strong>
+              <span style="font-size:9.5px; color:var(--text-muted); display:block;">${grossUSD} $ | ${grossEGP} ج.م</span>
+            </div>
+            <div>
+              <span style="font-size:10.5px; color:var(--text-muted); display:block;">عمولة المنصة (${l.commissionRate}%)</span>
+              <strong style="font-size:14px; color:var(--danger);">${l.platformCommissionSAR} ر.س</strong>
+              <span style="font-size:9.5px; color:var(--text-muted); display:block;">${commUSD} $ | ${commEGP} ج.م</span>
+            </div>
+            <div>
+              <span style="font-size:10.5px; color:var(--text-muted); display:block;">صافي الدار بعد العمولة</span>
+              <strong style="font-size:13.5px; color:var(--success);">${l.netPublisherSAR} ر.س</strong>
+            </div>
+          </div>
+
+          <details class="sq-accordion-box" style="margin:0;">
+            <summary><span><i class="fa-solid fa-list-check" style="color:var(--accent); margin-left:5px;"></i> عرض السجل التفصيلي للفواتير المسلمة (${l.invoices.length})</span></summary>
+            <div style="margin-top:8px;">${invRowsHtml}</div>
+          </details>
+        </div>
+      `;
+    }).join('');
+
+    box.innerHTML = summaryHeaderHtml + ledgersHtml;
+  }
+
+  // 3. قسم إدارة الأحداث والمعارض
+  else if (AppState.adminCurrentTab === 'ads' && window.sqHasPermission('manage_ads')) {
+    const eventsHtml = AppState.eventsList.map(ev => `
+      <div style="background:var(--bg); border:1px solid var(--border); padding:11px; border-radius:14px; margin-top:8px; display:flex; justify-content:space-between; align-items:center; gap:10px;">
+        <div style="display:flex; align-items:center; gap:10px; overflow:hidden; cursor:pointer;" onclick="window.sqOpenEventDetail('${ev.id}')">
+          <img src="${escapeHtml(ev.imageUrl || APP_LOGO_URL)}" style="width:60px; aspect-ratio:16/9; object-fit:cover; border-radius:8px; border:1px solid var(--accent); flex-shrink:0;">
+          <div style="overflow:hidden;">
+            <strong style="font-size:13px; color:var(--text-main); display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(ev.title)}</strong>
+            <span style="font-size:11px; color:var(--text-muted);">${escapeHtml(ev.eventDate || '')} • ${ev.clicks || 0} مشاهدة</span>
+          </div>
+        </div>
+        <div style="display:flex; gap:5px; flex-shrink:0;">
+          <button class="sq-btn sq-btn-outline" style="padding:5px 10px!important; font-size:11px!important;" onclick="window.sqOpenEventStudio('${ev.id}')"><i class="fa-solid fa-pen"></i></button>
+          <button class="sq-btn" style="background:var(--danger)!important; padding:5px 10px!important; font-size:11px!important;" onclick="window.sqDeleteEvent('${ev.id}')"><i class="fa-solid fa-trash"></i></button>
+        </div>
+      </div>
+    `).join('');
+
+    box.innerHTML = `
+      <div style="background:var(--bg); padding:13px; border-radius:15px; border:1px solid var(--border); margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div>
+          <h4 style="font-size:13.5px; font-weight:900;"><i class="fa-solid fa-calendar-star" style="color:var(--accent);"></i> شريط الأحداث والمعارض التلقائي (16:9)</h4>
+          <p style="font-size:11.5px; color:var(--text-muted);">يتحرك تلقائياً أعلى المتجر ويعرض المعارض والعروض</p>
+        </div>
+        <button class="sq-btn sq-btn-gold" onclick="window.sqOpenEventStudio(null)"><i class="fa-solid fa-plus"></i> إضافة حدث</button>
+      </div>
+      ${eventsHtml || `<p style="text-align:center; padding:20px; color:var(--text-muted);">لا توجد أحداث مضافة حالياً.</p>`}
+    `;
+  }
+
+  // 4. قسم تذاكر الدعم الفني
+  else if (AppState.adminCurrentTab === 'tickets' && window.sqHasPermission('manage_support')) {
+    if (!AppState.ticketsList.length) {
+      box.innerHTML = `<p style="text-align:center; padding:25px; color:var(--text-muted);">لا توجد تذاكر دعم واردة حالياً.</p>`;
+      return;
+    }
+    box.innerHTML = AppState.ticketsList.map(t => `
+      <div style="background:var(--bg); border:1px solid var(--border); padding:12px; border-radius:14px; margin-bottom:8px;">
+        <div style="display:flex; justify-content:space-between; font-size:12px; font-weight:bold;">
+          <span style="cursor:pointer; color:var(--text-main);" onclick="window.sqViewProfile('${t.uid}')"><i class="fa-solid fa-user"></i> ${escapeHtml(getRealName(t.uid, t.authorName))}</span>
+          <span style="color:var(--accent);">${escapeHtml(t.subject)}</span>
+        </div>
+        <p style="font-size:13px; margin:6px 0; white-space:pre-wrap;">${escapeHtml(t.message)}</p>
+        ${t.reply ? `<div style="font-size:12px; color:var(--success); margin-bottom:6px; background:var(--card); padding:6px 10px; border-radius:8px;"><strong>تم الرد:</strong> ${escapeHtml(t.reply)}</div>` : ''}
+        <div style="display:flex; gap:6px;">
+          <button class="sq-btn" style="padding:5px 12px!important; font-size:11.5px!important;" onclick="window.sqReplyTicket('${t.id}', '${t.uid}')"><i class="fa-solid fa-reply"></i> إرسال رد</button>
+          <button class="sq-btn sq-btn-outline" style="padding:5px 12px!important; font-size:11.5px!important; color:var(--danger)!important;" onclick="db.collection('safaqat_tickets').doc('${t.id}').delete()">حذف</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // 5. قسم البلاغات والرقابة
+  else if (AppState.adminCurrentTab === 'reports' && window.sqHasPermission('manage_mod')) {
+    db.collection("safaqat_reports").orderBy("time", "desc").limit(25).get().then(snap => {
+      if (snap.empty) { box.innerHTML = `<p style="text-align:center; padding:20px; color:var(--text-muted);">سجل البلاغات نظيف تماماً.</p>`; return; }
+      let h = '';
+      snap.forEach(doc => {
+        const r = doc.data();
+        h += `
+          <div style="background:var(--bg); border:1px solid var(--border); padding:11px; border-radius:12px; margin-bottom:8px;">
+            <div style="font-size:12px; font-weight:bold; color:var(--danger);">سبب البلاغ: ${escapeHtml(r.reason)}</div>
+            <p style="font-size:12.5px; margin:5px 0;">"${escapeHtml(r.postSnippet || '')}"</p>
+            <div style="display:flex; gap:6px;">
+              <button class="sq-btn" style="padding:4px 10px!important; font-size:11px!important;" onclick="window.sqOpenSinglePost('${r.postId}')">معاينة المنشور</button>
+              <button class="sq-btn" style="background:var(--danger)!important; padding:4px 10px!important; font-size:11px!important;" onclick="db.collection('safaqat_reports').doc('${doc.id}').delete().then(()=>window.sqRenderAdminSubContent())">إغلاق البلاغ</button>
+            </div>
+          </div>
+        `;
+      });
+      box.innerHTML = h;
+    });
+  }
+
+  // 6. قسم الإدارة السيادية للصلاحيات ودور النشر والعمولات (حصرياً للبريدين الأساسيين Super Admins)
+  else if (AppState.adminCurrentTab === 'staff' && isSuper) {
+    box.innerHTML = `
+      <div style="background:var(--bg); border:1px solid var(--border); border-radius:14px; padding:12px;">
+        <h4 style="font-size:14px; font-weight:900; margin-bottom:4px;"><i class="fa-solid fa-user-shield" style="color:var(--accent);"></i> التحكم السيادي بالصلاحيات، دور النشر، ونسب العمولة</h4>
+        <p style="font-size:11.5px; color:var(--text-muted); margin-bottom:10px;">أنت مسجل بأحد الحسابين السياديين الأساسيين؛ يمكنك منح أو انتزاع ميزة دار النشر أو الإدارة أو الموظفين من أي حساب فوراً:</p>
+        <input type="text" id="adm-staff-search-in" class="sq-input" placeholder="ابحث عن أي حساب بالاسم أو البريد أو معرف SKID..." oninput="window.sqFilterAdminStaffList(this.value)">
+        <div id="adm-staff-list-box" style="display:flex; flex-direction:column; gap:8px; max-height:460px; overflow-y:auto;"></div>
+      </div>
+    `;
+    window.sqFilterAdminStaffList('');
+  }
+
+  // 7. الإعدادات المركزية للمنصة
+  else if (AppState.adminCurrentTab === 'dar_cfg' && isSuper) {
+    box.innerHTML = `
+      <div style="background:var(--bg); padding:14px; border-radius:16px; border:1px solid var(--border);">
+        <h4 style="font-size:14px; font-weight:900; margin-bottom:10px;"><i class="fa-solid fa-building-columns" style="color:var(--accent);"></i> الإعدادات المركزية لـ ${escapeHtml(APP_NAME)}</h4>
+        <label class="sq-field-label">اسم المنصة الرسمي:</label>
+        <input type="text" id="cfg-in-appname" class="sq-input" value="${escapeHtml(APP_NAME)}">
+
+        <label class="sq-field-label">رابط صورة شعار الدار الرسمي (Logo URL):</label>
+        <input type="url" id="cfg-in-logo" class="sq-input" value="${escapeHtml(APP_LOGO_URL)}">
+
+        <div style="display:grid; grid-template-columns:2fr 1fr; gap:8px;">
+          <div>
+            <label class="sq-field-label">رقم واتساب الدار الرئيسي لاستقبال الفواتير:</label>
+            <input type="text" id="cfg-in-wa" class="sq-input" value="${escapeHtml(DAR_WHATSAPP_NUMBER)}" placeholder="+201016327947">
+          </div>
+          <div>
+            <label class="sq-field-label">العملة الافتراضية:</label>
+            <input type="text" id="cfg-in-curr" class="sq-input" value="${escapeHtml(DEFAULT_CURRENCY)}" placeholder="SAR">
+          </div>
+        </div>
+        <button class="sq-btn sq-btn-gold" style="width:100%; margin-top:4px;" onclick="window.sqSaveGeneralDarSettings()"><i class="fa-solid fa-floppy-disk"></i> حفظ وتطبيق إعدادات الدار فوراً</button>
+      </div>
+    `;
+  }
+
+  // 8. دليل التعليمات والتشغيل الذكي
+  else if (AppState.adminCurrentTab === 'help') {
+    box.innerHTML = `
+      <div style="background:var(--bg); border:1px solid var(--border); border-radius:16px; padding:14px;">
+        <h4 style="font-size:14.5px; font-weight:900; margin-bottom:10px; color:var(--text-main);"><i class="fa-solid fa-graduation-cap" style="color:var(--accent);"></i> دليل التشغيل والنظام المالي (تحديث الإصدار 1.8)</h4>
+        <ul style="padding-right:18px; font-size:12.5px; color:var(--text-muted); line-height:1.9;">
+          <li><strong>الحماية السيادية للصلاحيات:</strong> البريدان الأساسيان فقط لهما حق منح أو انتزاع صلاحية دار النشر أو الموظفين أو الإدارة، ولا يمكن لأحدهما نزع صلاحيات الآخر.</li>
+          <li><strong>نظام العمولة والتسويات المالية العادل:</strong> عند منح أي حساب ميزة (دار نشر)، يطلب منك النظام تحديد نسبة عمولة المنصة (%). لا تُحتسب أي عمولة على الطلبات الملغاة أو قيد المراجعة، بل تُسجل تلقائياً في دفتر التسويات المالية فور تحويل حالة الفاتورة إلى <strong>(تم التسليم)</strong> مع توثيق رقم الفاتورة وتاريخ التسليم بالدقيقة.</li>
+          <li><strong>العملات الثلاث والقراءة الآمنة:</strong> يدعم المتجر الريال السعودي والدولار والجنيه المصري، مع إمكانية تفعيل الطلب الورقي والقراءة الآمنة داخل الموقع والتحميل الصامت في الخلفية معاً.</li>
+        </ul>
+      </div>
+    `;
+  }
+};
+
+// إرسال كشف الحساب المالي الموثق لدار النشر عبر واتساب
+window.sqSendSettlementViaWhatsApp = function(pubUid) {
+  const ledgers = window.sqCalculateFinancialSettlements(pubUid);
+  if (!ledgers.length) return;
+  const l = ledgers[0];
+  const usdRate = CURRENCY_CONFIG.USD.rateFromSAR;
+  const egpRate = CURRENCY_CONFIG.EGP.rateFromSAR;
+
+  const invLines = l.invoices.slice(0, 15).map((inv, i) =>
+    `${i + 1}. فاتورة #${inv.orderCode} | المستلم: ${inv.buyerName} | المسلم: ${inv.titlesText} | المبلغ: ${inv.grossSAR} ر.س | عمولة المنصة (${inv.commissionRate}%): ${inv.commissionSAR} ر.س`
+  ).join('\n');
+
+  const reportText = `*كشف حساب التسويات المالية الموثق — منصة ${APP_NAME}*
+*دار النشر:* ${l.pubName}
+*نسبة عمولة المنصة المتفق عليها:* ${l.commissionRate}%
+*عدد الفواتير المؤكد تسليمها للعملاء:* ${l.deliveredOrdersCount} فاتورة (${l.deliveredBooksQty} كتاب)
+
+*إجمالي مبيعات الدار المسلمة:* ${l.grossSalesSAR} ر.س (${(l.grossSalesSAR * usdRate).toFixed(2)} $ | ${Math.round(l.grossSalesSAR * egpRate)} ج.م)
+*صافي عمولة منصة ${APP_NAME} المستحقة:* ${l.platformCommissionSAR} ر.س (${(l.platformCommissionSAR * usdRate).toFixed(2)} $ | ${Math.round(l.platformCommissionSAR * egpRate)} ج.م)
+*صافي أرباح الدار بعد العمولة:* ${l.netPublisherSAR} ر.س
+
+*تفاصيل الفواتير المسلمة:*
+${invLines || 'لا توجد فواتير مسلمة بعد'}`;
+
+  const cleanPhone = (l.pubWhatsapp || DAR_WHATSAPP_NUMBER || '').replace(/[^0-9]/g, '');
+  if (cleanPhone) {
+    window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(reportText)}`, '_blank');
+  } else if (navigator.clipboard) {
+    navigator.clipboard.writeText(reportText).then(() => sqShowToast("تم نسخ كشف الحساب الموثق للحافظة!", "success"));
+  }
+};
+
+window.sqFilterAdminOrdersList = function() {
+  const container = document.getElementById('adm-orders-list-container'); if (!container) return;
+  const q = (document.getElementById('adm-order-search-in')?.value || '').toLowerCase().trim();
+  const canManageAllOrders = AppState.isAdmin || (AppState.userData.permissions || []).includes('manage_orders');
+  const isPublisherAccount = Boolean(AppState.userData && AppState.userData.isPublisher);
+  const myUid = AppState.currentUser ? AppState.currentUser.uid : '';
+
+  const filtered = AppState.ordersList.filter(ord => {
+    if (isPublisherAccount && !canManageAllOrders) {
+      const pubs = ord.publisherUids || [];
+      const hasMyBook = (ord.items || []).some(it => it.publisherUid === myUid);
+      if (!pubs.includes(myUid) && !hasMyBook) return false;
+    }
+    if (!q) return true;
+    return (ord.orderCode || '').toLowerCase().includes(q) ||
+           (ord.buyerName || '').toLowerCase().includes(q) ||
+           (ord.buyerPhone || '').toLowerCase().includes(q) ||
+           (ord.city || '').toLowerCase().includes(q);
+  });
+
+  if (!filtered.length) {
+    container.innerHTML = `<p style="text-align:center; padding:25px; color:var(--text-muted);">لا توجد فواتير مطابقة لبحثك.</p>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map(ord => {
+    const stObj = ORDER_STATUS_MAP[ord.status || 'pending_review'] || ORDER_STATUS_MAP.pending_review;
+    const booksSummary = (ord.items || []).map(i => `${i.title} (×${i.qty})`).join(' ، ');
+    return `
+      <div style="background:var(--bg); border:1px solid var(--border); border-radius:16px; padding:13px; margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:6px;">
+          <div>
+            <strong style="font-size:14.5px; color:var(--text-main);">#${escapeHtml(ord.orderCode)}</strong>
+            <span style="font-size:11px; color:var(--text-muted); margin-right:6px;">${sqFormatExactTime(ord.createdAt)}</span>
+          </div>
+          <span class="sq-order-status-badge" style="background:${stObj.color}20; color:${stObj.color}; border:1px solid ${stObj.color}50;">
+            <i class="fa-solid ${stObj.icon}"></i> ${stObj.label}
+          </span>
+        </div>
+        <div style="font-size:12.5px; font-weight:800; color:var(--text-main); margin-bottom:3px;"><i class="fa-solid fa-user-check" style="color:var(--accent);"></i> الاسم الحقيقي للمستلم: ${escapeHtml(ord.buyerName)} — جوال: <span dir="ltr">${escapeHtml(ord.buyerPhone)}</span></div>
+        <div style="font-size:12px; color:var(--text-muted); margin-bottom:4px;"><i class="fa-solid fa-location-dot" style="color:var(--accent);"></i> العنوان: ${escapeHtml(ord.country)} - ${escapeHtml(ord.city)} (${escapeHtml(ord.address || '')})</div>
+        <div style="font-size:12px; color:var(--text-main); font-weight:800; margin-bottom:4px;"><i class="fa-solid fa-book" style="color:var(--accent);"></i> الكتب: ${escapeHtml(booksSummary)}</div>
+        <div style="font-size:13px; color:var(--accent); font-weight:900; margin-bottom:9px;">الإجمالي: ${ord.totalAmount} ${escapeHtml(ord.currency || 'ر.س')}</div>
+
+        <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; background:var(--card); padding:8px; border-radius:12px; border:1px solid var(--border);">
+          <span style="font-size:11px; font-weight:800;">تحديث الحالة:</span>
+          <select class="sq-select" style="margin:0!important; flex:1; min-width:140px; padding:5px 9px!important; font-size:11.5px!important;" onchange="window.sqUpdateOrderStatus('${ord.id}', '${ord.buyerUid}', '${escapeHtml(ord.orderCode)}', this.value)">
+            <option value="pending_review" ${ord.status === 'pending_review' ? 'selected' : ''}>1. تمت المراجعة</option>
+            <option value="contacted" ${ord.status === 'contacted' ? 'selected' : ''}>2. تم التواصل</option>
+            <option value="processing" ${ord.status === 'processing' ? 'selected' : ''}>3. قيد التجهيز</option>
+            <option value="shipped" ${ord.status === 'shipped' ? 'selected' : ''}>4. تم الشحن</option>
+            <option value="completed" ${ord.status === 'completed' ? 'selected' : ''}>5. تم التسليم (تُحتسب العمولة)</option>
+            <option value="cancelled" ${ord.status === 'cancelled' ? 'selected' : ''}>طلب ملغي (لا تُحتسب عمولة)</option>
+          </select>
+          <button class="sq-btn sq-btn-outline" style="padding:5px 10px!important; font-size:11px!important;" onclick="window.sqAddAdminOrderNote('${ord.id}', '${escapeHtml(ord.adminNote || '')}')"><i class="fa-solid fa-comment-medical"></i> ملاحظة</button>
+          <a href="https://wa.me/${(ord.buyerPhone || '').replace(/[^0-9]/g, '')}" target="_blank" class="sq-btn" style="background:#25D366!important; color:#fff!important; padding:5px 11px!important; font-size:11px!important;"><i class="fa-brands fa-whatsapp"></i> واتساب</a>
+        </div>
+      </div>
+    `;
+  }).join('');
+};
+
+window.sqUpdateOrderStatus = function(orderId, buyerUid, orderCode, newStatus) {
+  const stObj = ORDER_STATUS_MAP[newStatus] || ORDER_STATUS_MAP.pending_review;
+  const updates = { status: newStatus, updatedAt: Date.now() };
+  if (newStatus === 'completed') {
+    updates.completedAt = Date.now();
+  }
+  db.collection("safaqat_orders").doc(orderId).update(updates).then(() => {
+    if (buyerUid && buyerUid !== 'GUEST') {
+      window.sqSendNotif(buyerUid, null, `تحديث على فاتورتك (#${orderCode}): أصبحت حالة طلبك الآن "${stObj.label}".`);
+    }
+    sqShowToast(newStatus === 'completed' ? `تم تأكيد تسليم الطلب #${orderCode} وإدراجه في التسويات المالية!` : `تم تحديث حالة الطلب #${orderCode} إلى: ${stObj.label}`, "success");
+  });
+};
+
+window.sqAddAdminOrderNote = function(orderId, currentNote) {
+  window.sqOpenCustomPrompt("اكتب ملاحظة للمشتري حول طلبه (مثل رقم بوليصة الشحن أو موعد التسليم):", currentNote, (newNote) => {
+    db.collection("safaqat_orders").doc(orderId).update({ adminNote: newNote, updatedAt: Date.now() }).then(() => {
+      sqShowToast("تم حفظ الملاحظة على الفاتورة!", "success");
+    });
+  });
+};
+
+// =========================================================
+// 🔒 دوال التحكم السيادي بصلاحيات دور النشر والإدارة والعمولات (Super Admins Only)
+// =========================================================
+window.sqFilterAdminStaffList = function(query) {
+  const box = document.getElementById('adm-staff-list-box'); if (!box) return;
+  if (!window.sqIsCurrentUserSuperAdmin()) return;
+
+  const q = (query || '').toLowerCase().trim();
+  const list = Object.keys(AppState.allUsers).map(uid => ({ uid, ...AppState.allUsers[uid] })).filter(u => {
+    if (!q) return true;
+    const name = getRealName(u.uid, u.displayName).toLowerCase();
+    const skid = ('sk-' + u.uid.substring(0, 6)).toLowerCase();
+    const em = (u.email || '').toLowerCase();
+    return name.includes(q) || skid.includes(q) || em.includes(q);
+  }).slice(0, 35);
+
+  box.innerHTML = list.map(u => {
+    const uName = getRealName(u.uid, u.displayName);
+    const isTargetSuper = window.sqIsSuperAdminEmail(u.email);
+    const perms = u.permissions || [];
+    const isPub = Boolean(u.isPublisher);
+    const isAuth = Boolean(u.isAuthor);
+    const hasLegacyAdmin = Boolean(u.isAdminUser && !isTargetSuper);
+    const commRate = u.commissionRate !== undefined ? u.commissionRate : 10;
+
+    return `
+      <div style="background:var(--card); border:1px solid var(--border); border-radius:14px; padding:11px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:8px;">
+          <div style="display:flex; align-items:center; gap:8px; cursor:pointer;" onclick="window.sqViewProfile('${u.uid}')">
+            <img src="${getRealPhoto(u.uid, u.photoURL)}" style="width:36px; height:36px; border-radius:50%; object-fit:cover;">
+            <div>
+              <strong style="font-size:13px;">${escapeHtml(uName)}</strong> ${window.getUserBadges(u.uid, false, false, true)}
+              <div style="font-size:10.5px; color:var(--text-muted);">SK-${u.uid.substring(0, 6).toUpperCase()} ${u.email ? `• ${escapeHtml(u.email)}` : ''}</div>
+            </div>
+          </div>
+
+          ${isTargetSuper ? `
+            <span class="sq-role-tag admin"><i class="fa-solid fa-lock"></i> حساب سيادي أساسي (محمي)</span>
+          ` : `
+            <div style="display:flex; gap:5px; flex-wrap:wrap;">
+              <button class="sq-btn ${isPub ? 'sq-btn-gold' : 'sq-btn-outline'}" style="padding:4px 10px!important; font-size:11px!important;" onclick="window.sqTogglePublisher('${u.uid}',${isPub})">
+                <i class="fa-solid fa-building-columns"></i> ${isPub ? `انتزاع دار النشر (${commRate}%)` : 'منح دار نشر + عمولة'}
+              </button>
+              ${isPub ? `
+                <button class="sq-btn sq-btn-outline" style="padding:4px 8px!important; font-size:10.5px!important;" onclick="window.sqSetPublisherCommissionPrompt('${u.uid}', ${commRate})" title="تعديل نسبة العمولة">
+                  <i class="fa-solid fa-percent" style="color:var(--accent);"></i> ${commRate}%
+                </button>
+              ` : ''}
+              <button class="sq-btn" style="background:${isAuth ? 'var(--author)' : 'var(--bg)'}!important; color:${isAuth ? '#fff' : 'var(--text-main)'}!important; border:1px solid var(--border)!important; padding:4px 10px!important; font-size:11px!important;" onclick="window.sqToggleAuthor('${u.uid}',${isAuth})">
+                <i class="fa-solid fa-feather-pointed"></i> ${isAuth ? 'انتزاع شارة الكاتب' : 'توثيق كاتب'}
+              </button>
+              ${hasLegacyAdmin ? `
+                <button class="sq-btn" style="background:var(--danger)!important; color:#fff!important; padding:4px 10px!important; font-size:11px!important;" onclick="window.sqStripLegacyAdminFlag('${u.uid}')">
+                  <i class="fa-solid fa-user-slash"></i> انتزاع الإدارة
+                </button>
+              ` : ''}
+            </div>
+          `}
+        </div>
+
+        ${!isTargetSuper ? `
+          <div style="display:flex; gap:5px; flex-wrap:wrap; padding-top:6px; border-top:1px dashed var(--border);">
+            ${Object.keys(STAFF_PERMISSIONS_MAP).map(pk => {
+              const hasP = perms.includes(pk);
+              return `<button class="sq-btn ${hasP ? 'sq-btn-gold' : 'sq-btn-outline'}" style="padding:3px 8px!important; font-size:10px!important;" onclick="window.sqToggleStaffPermission('${u.uid}', '${pk}', ${hasP})"><i class="fa-solid ${hasP ? 'fa-check' : 'fa-plus'}"></i> ${STAFF_PERMISSIONS_MAP[pk].label}</button>`;
+            }).join('')}
+            ${(perms.length > 0 || isPub || hasLegacyAdmin) ? `<button class="sq-btn" style="background:var(--danger)!important; color:#fff!important; padding:3px 9px!important; font-size:10px!important;" onclick="window.sqRevokeAllUserRoles('${u.uid}')">انتزاع كل الصلاحيات</button>` : ''}
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }).join('');
+};
+
+// منح أو انتزاع صلاحية دار النشر مع تحديد نسبة العمولة المئوية
+window.sqTogglePublisher = function(uid, currentStatus) {
+  if (!window.sqIsCurrentUserSuperAdmin()) {
+    return sqShowToast("منح أو انتزاع صلاحية دار النشر محصور بالحسابين السياديين الأساسيين فقط", "danger");
+  }
+  if (window.sqIsSuperAdminUid(uid)) {
+    return sqShowToast("لا يمكن تعديل صلاحيات الحساب السيادي الأساسي", "danger");
+  }
+
+  if (currentStatus) {
+    if (!confirm("هل أنت متأكد من انتزاع ميزة (دار النشر المعتمدة) من هذا الحساب؟")) return;
+    db.collection("safaqat_users").doc(uid).update({ isPublisher: false }).then(() => {
+      if (AppState.allUsers[uid]) AppState.allUsers[uid].isPublisher = false;
+      sqShowToast("تم انتزاع ميزة دار النشر من الحساب فوراً!", "warning");
+      if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+      if (AppState.activeMainView === 'settings_page') window.sqRenderAdminDashboard();
+    });
+  } else {
+    const existingRate = (AppState.allUsers[uid] && AppState.allUsers[uid].commissionRate !== undefined) ? AppState.allUsers[uid].commissionRate : 10;
+    window.sqOpenCustomPrompt("حدد نسبة عمولة منصة صفقات كتابية (%) المتفق عليها مع دار النشر هذه (تُحتسب تلقائياً على الطلبات المؤكد تسليمها):", String(existingRate), (rateInput) => {
+      let rate = parseFloat(String(rateInput || '10').replace(/[^0-9.]/g, ''));
+      if (isNaN(rate) || rate < 0 || rate > 100) rate = 10;
+      db.collection("safaqat_users").doc(uid).update({
+        isPublisher: true,
+        commissionRate: rate
+      }).then(() => {
+        if (AppState.allUsers[uid]) {
+          AppState.allUsers[uid].isPublisher = true;
+          AppState.allUsers[uid].commissionRate = rate;
+        }
+        sqShowToast(`تم اعتماد الحساب كدار نشر (الشارة الذهبية) بعمولة منصة (${rate}%)!`, "success");
+        if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+        if (AppState.activeMainView === 'settings_page') window.sqRenderAdminDashboard();
+      });
+    });
+  }
+};
+
+window.sqSetPublisherCommissionPrompt = function(uid, currentRate = 10) {
+  if (!window.sqIsCurrentUserSuperAdmin()) return;
+  window.sqOpenCustomPrompt("تعديل نسبة عمولة المنصة (%) المتفق عليها مع دار النشر:", String(currentRate), (val) => {
+    let rate = parseFloat(String(val || '10').replace(/[^0-9.]/g, ''));
+    if (isNaN(rate) || rate < 0 || rate > 100) return sqShowToast("يرجى إدخال نسبة مئوية صحيحة بين 0 و 100", "warning");
+    db.collection("safaqat_users").doc(uid).update({ commissionRate: rate }).then(() => {
+      if (AppState.allUsers[uid]) AppState.allUsers[uid].commissionRate = rate;
+      sqShowToast(`تم تحديث نسبة العمولة إلى ${rate}% بنجاح!`, "success");
+      if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+      if (AppState.activeMainView === 'settings_page') window.sqRenderAdminDashboard();
+    });
+  });
+};
+
+// انتزاع شارة الإدارة الحمراء من أي حساب غير البريدين الأساسيين
+window.sqStripLegacyAdminFlag = function(uid) {
+  if (!window.sqIsCurrentUserSuperAdmin()) return;
+  if (window.sqIsSuperAdminUid(uid)) return sqShowToast("لا يمكن انتزاع صلاحيات الحساب السيادي الأساسي", "danger");
+  db.collection("safaqat_users").doc(uid).update({ isAdminUser: false, permissions: [] }).then(() => {
+    if (AppState.allUsers[uid]) {
+      AppState.allUsers[uid].isAdminUser = false;
+      AppState.allUsers[uid].permissions = [];
+    }
+    sqShowToast("تم انتزاع صلاحية الإدارة من الحساب بنجاح!", "success");
+    if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+    if (AppState.activeMainView === 'settings_page') window.sqRenderAdminDashboard();
+  });
+};
+
+// انتزاع كافة الصلاحيات دفعة واحدة من أي حساب غير البريدين الأساسيين
+window.sqRevokeAllUserRoles = function(uid) {
+  if (!window.sqIsCurrentUserSuperAdmin()) return;
+  if (window.sqIsSuperAdminUid(uid)) return sqShowToast("لا يمكن المساس بالحساب السيادي الأساسي", "danger");
+  if (!confirm("هل أنت متأكد من سحب كافة الصلاحيات (دار النشر / الإدارة / الموظف) من هذا الحساب؟")) return;
+  db.collection("safaqat_users").doc(uid).update({
+    isPublisher: false,
+    isAdminUser: false,
+    permissions: []
+  }).then(() => {
+    if (AppState.allUsers[uid]) {
+      AppState.allUsers[uid].isPublisher = false;
+      AppState.allUsers[uid].isAdminUser = false;
+      AppState.allUsers[uid].permissions = [];
+    }
+    sqShowToast("تم تجريد الحساب من كافة الصلاحيات الإدارية وصلاحيات النشر!", "warning");
+    if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+    if (AppState.activeMainView === 'settings_page') window.sqRenderAdminDashboard();
+  });
+};
+
+window.sqToggleAuthor = function(uid, currentStatus) {
+  if (!window.sqIsCurrentUserSuperAdmin() && !window.sqHasPermission('manage_books')) return;
+  const updates = { isAuthor: !currentStatus };
+  if (!currentStatus) {
+    updates.linkedPublishers = firebase.firestore.FieldValue.arrayUnion('DAR_MAIN');
+  }
+  db.collection("safaqat_users").doc(uid).update(updates).then(() => {
+    if (AppState.allUsers[uid]) {
+      AppState.allUsers[uid].isAuthor = !currentStatus;
+    }
+    sqShowToast(!currentStatus ? "تم توثيق الكاتب بالشارة الزرقاء!" : "تم انتزاع شارة الكاتب", "success");
+    if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+    if (AppState.activeMainView === 'settings_page') window.sqFilterAdminStaffList(document.getElementById('adm-staff-search-in')?.value || '');
+  });
+};
+
+window.sqToggleStaffPermission = function(uid, permKey, currentlyHas) {
+  if (!window.sqIsCurrentUserSuperAdmin()) {
+    return sqShowToast("منح أو نزع صلاحيات الموظفين محصور بالحسابين السياديين الأساسيين فقط", "danger");
+  }
+  if (window.sqIsSuperAdminUid(uid)) return;
+  const userObj = AppState.allUsers[uid] || {};
+  let perms = [...(userObj.permissions || [])];
+  if (currentlyHas) perms = perms.filter(p => p !== permKey);
+  else if (!perms.includes(permKey)) perms.push(permKey);
+
+  db.collection("safaqat_users").doc(uid).update({ permissions: perms }).then(() => {
+    if (AppState.allUsers[uid]) AppState.allUsers[uid].permissions = perms;
+    sqShowToast("تم تحديث صلاحيات الحساب بنجاح!", "success");
+    if (AppState.activeMainView === 'settings_page') window.sqFilterAdminStaffList(document.getElementById('adm-staff-search-in')?.value || '');
+    if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+  });
+};
+
+window.sqSaveGeneralDarSettings = function() {
+  if (!window.sqIsCurrentUserSuperAdmin()) return;
+  const appName = (document.getElementById('cfg-in-appname')?.value || APP_NAME).trim();
+  const logoUrl = (document.getElementById('cfg-in-logo')?.value || APP_LOGO_URL).trim();
+  const whatsappNumber = (document.getElementById('cfg-in-wa')?.value || DAR_WHATSAPP_NUMBER).trim();
+  const defaultCurrency = (document.getElementById('cfg-in-curr')?.value || DEFAULT_CURRENCY).trim();
+
+  const payload = { appName, logoUrl, whatsappNumber, defaultCurrency, updatedAt: Date.now() };
+  db.collection("safaqat_settings").doc("general").set(payload, { merge: true }).then(() => {
+    window.sqApplyDynamicDarSettings(payload);
+    sqShowToast("تم حفظ وتطبيق إعدادات المنصة بنجاح!", "success");
+  });
+};
+
+window.sqReplyTicket = function(ticketId, targetUid) {
+  window.sqOpenCustomPrompt("اكتب رد الإدارة على هذه التذكرة:", "", (replyTxt) => {
+    if (!replyTxt) return;
+    db.collection("safaqat_tickets").doc(ticketId).update({ reply: replyTxt }).then(() => {
+      window.sqSendNotif(targetUid, null, `ردّت إدارة الدار على تذكرتك في قسم الدعم.`);
+      sqShowToast("تم إرسال الرد للعضو", "success");
+    });
+  });
+};
+
+window.sqToggleMute = function(uid, currentMute) {
+  if (!window.sqHasPermission('manage_mod')) return;
+  if (window.sqIsSuperAdminUid(uid)) return sqShowToast("لا يمكن تقييد الحساب السيادي الأساسي", "danger");
+  db.collection("safaqat_users").doc(uid).update({ isMuted: !currentMute }).then(() => {
+    if (AppState.allUsers[uid]) AppState.allUsers[uid].isMuted = !currentMute;
+    sqShowToast(!currentMute ? "تم تقييد الحساب من النشر" : "تم فك التقييد", "warning");
+    if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+  });
+};
+
+window.sqToggleBan = function(uid, currentBan) {
+  if (!window.sqIsCurrentUserSuperAdmin()) return;
+  if (window.sqIsSuperAdminUid(uid)) return sqShowToast("لا يمكن حظر الحساب السيادي الأساسي", "danger");
+  if (!confirm(currentBan ? "فك الحظر عن هذا الحساب؟" : "حظر هذا الحساب نهائياً؟")) return;
+  db.collection("safaqat_users").doc(uid).update({ isBanned: !currentBan }).then(() => {
+    if (AppState.allUsers[uid]) AppState.allUsers[uid].isBanned = !currentBan;
+    sqShowToast("تم تحديث حالة الحظر", "danger");
+    if (AppState.activeMainView === 'profile_page') window.sqRenderProfilePage();
+  });
+};
+
+// =========================================================
+// 🤖 المساعد الأدبي الذكي المدمج "راوي" (Rawi Smart Companion)
+// ملم بكافة الكتب ودور النشر وأقسام المنصة ويعرض بطاقات الكتب القابلة للضغط فوراً
+// =========================================================
+window.sqToggleRawiChat = function() {
+  AppState.rawiOpen = !AppState.rawiOpen;
+  const drawer = document.getElementById('sq-rawi-drawer');
+  if (!drawer) return;
+  drawer.style.display = AppState.rawiOpen ? 'flex' : 'none';
+
+  const msgBox = document.getElementById('sq-rawi-messages');
+  if (AppState.rawiOpen && msgBox && !msgBox.children.length) {
+    const userName = AppState.currentUser ? getRealName(AppState.currentUser.uid, AppState.currentUser.displayName) : 'يا غالي';
+    window.sqAppendRawiBubble('bot', `يا هلا ونورت منصة **${APP_NAME}** ${escapeHtml(userName)}! 🌟\nأنا **راوي**، رفيقك الأدبي هنا وعارف كل صغيرة وكبيرة في المنصة.\n\nتقدر تسألني عن أي كتاب أو رواية أو كاتب، ومجرد ما يطلع لك الكتاب في رسالتي اضغط عليه يوديك لصفحته فوراً! تحب أرشح لك إيه النهاردة؟`, []);
+  }
+  if (AppState.rawiOpen) {
+    setTimeout(() => document.getElementById('sq-rawi-input')?.focus(), 80);
+  }
+};
+
+window.sqAskRawiQuick = function(qText) {
+  const inp = document.getElementById('sq-rawi-input');
+  if (inp) inp.value = qText;
+  window.sqSendRawiMessage();
+};
+
+window.sqAppendRawiBubble = function(sender, textHtml, matchedBooks = []) {
+  const msgBox = document.getElementById('sq-rawi-messages');
+  if (!msgBox) return;
+
+  const bubble = document.createElement('div');
+  bubble.className = `sq-rawi-bubble ${sender}`;
+
+  let formattedText = escapeHtml(textHtml)
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\n/g, '<br>');
+
+  let booksCardsHtml = '';
+  if (Array.isArray(matchedBooks) && matchedBooks.length > 0) {
+    booksCardsHtml = `<div style="margin-top:8px; display:flex; flex-direction:column; gap:6px;">` + matchedBooks.map(b => {
+      const pInfo = window.sqFormatBookPrice(b);
+      const aName = b.authorUid ? getRealName(b.authorUid, b.authorName) : (b.authorName || 'مؤلف');
+      return `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; background:var(--bg); border:1.5px solid var(--accent); border-radius:12px; padding:7px 9px; cursor:pointer;" onclick="window.sqToggleRawiChat(); window.sqOpenBookDetail('${b.id}')">
+          <div style="display:flex; align-items:center; gap:8px; overflow:hidden;">
+            <img src="${escapeHtml(b.cover || APP_LOGO_URL)}" style="width:34px; height:48px; object-fit:cover; border-radius:6px; flex-shrink:0;">
+            <div style="overflow:hidden;">
+              <div style="font-size:12px; font-weight:900; color:var(--text-main); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(b.title)}</div>
+              <div style="font-size:10.5px; color:var(--text-muted);">${escapeHtml(aName)}</div>
+              <div style="font-size:11px; font-weight:900; color:var(--accent);">${pInfo.current > 0 ? pInfo.current + ' ' + pInfo.symbol : 'قراءة / تحميل مجاني'}</div>
+            </div>
+          </div>
+          <span class="sq-btn sq-btn-gold" style="padding:4px 9px!important; font-size:10.5px!important; flex-shrink:0;">افتح الكتاب <i class="fa-solid fa-arrow-left"></i></span>
+        </div>
+      `;
+    }).join('') + `</div>`;
+  }
+
+  bubble.innerHTML = `<div>${formattedText}</div>${booksCardsHtml}`;
+  msgBox.appendChild(bubble);
+  msgBox.scrollTop = msgBox.scrollHeight;
+};
+
+// البحث الذكي الفوري لـ "راوي" داخل قاعدة بيانات المنصة + الاتصال بالنموذج الذكي
+window.sqFindBooksForRawiQuery = function(query) {
+  if (!AppState.booksList.length) return [];
+  const q = String(query || '').toLowerCase().trim();
+  if (!q) return [];
+
+  if (q.includes('مجاني') || q.includes('مجانيه') || q.includes('تحميل') || q.includes('قراءة')) {
+    return AppState.booksList.filter(b => Number(b.price) <= 0 || Boolean(b.downloadUrl)).slice(0, 4);
+  }
+  if (q.includes('رشح') || q.includes('اقترح') || q.includes('افضل') || q.includes('أفضل') || q.includes('رواية') || q.includes('روايه')) {
+    return [...AppState.booksList].sort((a, b) => window.SafaqatAI.scoreBookForUser(b) - window.SafaqatAI.scoreBookForUser(a)).slice(0, 3);
+  }
+
+  const words = q.replace(/(كتاب|رواية|روايه|ابغى|أبغى|عايز|عندكم|وين|فين|عن|اسم)/g, '').trim().split(/\s+/).filter(w => w.length >= 2);
+  if (!words.length) return [];
+
+  return AppState.booksList
+    .map(b => {
+      let pts = 0;
+      const t = (b.title || '').toLowerCase();
+      const a = (b.authorName || '').toLowerCase();
+      const d = (b.desc || '').toLowerCase();
+      const p = (b.publisherName || '').toLowerCase();
+      if (t.includes(q)) pts += 100;
+      words.forEach(w => {
+        if (t.includes(w)) pts += 45;
+        if (a.includes(w)) pts += 35;
+        if (p.includes(w)) pts += 25;
+        if (d.includes(w)) pts += 10;
+      });
+      return { book: b, pts };
+    })
+    .filter(x => x.pts > 0)
+    .sort((a, b) => b.pts - a.pts)
+    .slice(0, 4)
+    .map(x => x.book);
+};
+
+window.sqSendRawiMessage = async function() {
+  const inp = document.getElementById('sq-rawi-input');
+  if (!inp) return;
+  const userText = inp.value.trim();
+  if (!userText) return;
+  inp.value = '';
+
+  window.sqAppendRawiBubble('user', userText, []);
+
+  const matchedBooks = window.sqFindBooksForRawiQuery(userText);
+  const pubsList = window.sqGetApprovedPublishersList();
+  const qLow = userText.toLowerCase();
+
+  // بناء رد ذكي ودافئ وموثق من بيانات المنصة الحية أولاً
+  let localSmartReply = '';
+  if (qLow.includes('دور النشر') || qLow.includes('دار نشر') || qLow.includes('الناشرين')) {
+    const pubNames = pubsList.map(p => `• ${p.name} (${p.booksCount} إصدار)`).join('\n');
+    localSmartReply = `يا سيدي سؤالك في محله! 🌟 عندنا في **${APP_NAME}** دور نشر معتمدة وموثقة بالشارة الذهبية، ودي قائمتها الحالية:\n${pubNames}\n\nتقدر تضغط على زر **(دور النشر)** أعلى المتجر عشان تستكشف كل دار ومؤلفينها!`;
+  } else if (qLow.includes('طلب') || qLow.includes('فاتور') || qLow.includes('شراء') || qLow.includes('اشتر')) {
+    localSmartReply = `ولا أسهل من كدة يا غالي! 🛒\n1. ادخل صفحة أي كتاب واضغط **(اطلب النسخة الورقية الآن)**.\n2. من تبويب **(السلة والطلبات)** اكتب اسمك الحقيقي الثلاثي ورقم جوالك وعنوانك.\n3. النظام هيطلع لك فاتورة رسمية برقم يبدأ بـ **SK** ويحولك لواتساب الدار مباشرة لتأكيد الشحن، وتقدر تتابع مراحل شحن طلبك خطوة بخطوة!`;
+  } else if (matchedBooks.length > 0) {
+    const firstB = matchedBooks[0];
+    localSmartReply = `يا جمال ذوقك في الاختيار! 📚✨\nلقيت لك اللي بتدور عليه في مكتبة **${APP_NAME}**.. اضغط مباشرة على بطاقة الكتاب تحت رسالتي دي وهيفتح معاك فوراً لتصفحه أو قراءته أو طلبه:`;
+  }
+
+  // محاولة إثراء الرد عبر Gemini API إن لم يكن السؤال مباشرًا عن كتاب محدد
+  if (!localSmartReply && typeof RAWI_GEMINI_API_KEY === 'string' && RAWI_GEMINI_API_KEY.startsWith('AIza')) {
+    try {
+      const catalogContext = AppState.booksList.slice(0, 20).map(b => `${b.title} للمؤلف ${b.authorName || ''} (${b.price || 0} ر.س)`).join(' | ');
+      const sysPrompt = `أنت "راوي"، المساعد الأدبي الذكي والودود لمنصة ومتجر "صفقات كتابية" (لصاحبها الكاتب أحمد رشاد - راوي الشمال). تحدث بلباقة ومجاملة لطيفة ومزيج راقٍ من الفصحى السلسة واللمسة المصرية الودودة. الكتب المتوفرة في المتجر حالياً: [${catalogContext}]. أجب باختصار ودقة في 3 أسطر كحد أقصى.`;
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${RAWI_GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: `${sysPrompt}\n\nسؤال الزائر: ${userText}` }] }]
+        })
+      });
+      const data = await res.json();
+      const aiTxt = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (aiTxt) localSmartReply = aiTxt.trim();
+    } catch (e) {}
+  }
+
+  if (!localSmartReply) {
+    const fallbackBooks = AppState.booksList.slice(0, 3);
+    localSmartReply = `منورنا والله يا صديقي القارئ! 🌟\nأنا معاك في **${APP_NAME}** لخدمتك.. حالياً عندنا (${AppState.booksList.length}) إصدار في المتجر، ودي مجموعة من أبرز الإصدارات المتاحة قدامك دلوقتي تقدر تضغط على أي كتاب فيها وتستكشفه فوراً:`;
+    window.sqAppendRawiBubble('bot', localSmartReply, fallbackBooks);
+    return;
+  }
+
+  window.sqAppendRawiBubble('bot', localSmartReply, matchedBooks);
+};
+
+// =========================================================
+// 🔐 تهيئة النظام الشاملة والمصادقة الآمنة (الإصدار 1.8)
+// =========================================================
+window.sqLogin = function() {
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+  auth.signInWithPopup(provider).then((result) => {
+    if (result && result.user) {
+      sqShowToast("نورت صفقات كتابية! تم تسجيل الدخول بنجاح", "success");
+    }
+  }).catch((err) => {
+    if (err.code === 'auth/popup-blocked' || err.code === 'auth/operation-not-supported-in-this-environment') {
+      auth.signInWithRedirect(provider);
+    } else if (err.code !== 'auth/popup-closed-by-user') {
+      console.warn("Auth Error:", err);
+      sqShowToast("تأكد من الاتصال بالشبكة أو إعدادات المتصفح", "warning");
+    }
+  });
+};
+
+window.sqLogout = function() {
+  auth.signOut().then(() => {
+    window.sqSwitchMainView('store');
+    sqShowToast("تم تسجيل الخروج بنجاح.. ننتظرك قريباً!", "success");
+  });
+};
+
+function sqInitAuth() {
+  window.sqApplyThemeMode(localStorage.getItem('sq_theme_pref') || 'light');
+
+  auth.getRedirectResult().then((result) => {
+    if (result && result.user) {
+      sqShowToast("نورت صفقات كتابية! تم تسجيل الدخول بنجاح", "success");
+    }
+  }).catch(() => {});
+
+  try {
+    const cachedUsers = localStorage.getItem('sq_offline_users_cache');
+    if (cachedUsers) AppState.allUsers = JSON.parse(cachedUsers);
+    const cachedBooks = localStorage.getItem('sq_offline_books_cache');
+    if (cachedBooks) {
+      AppState.booksList = JSON.parse(cachedBooks);
+      if (AppState.activeMainView === 'store') window.sqRenderLibrarySection();
+    }
+    const cachedPosts = localStorage.getItem('sq_offline_posts_cache');
+    if (cachedPosts) {
+      AppState.posts = JSON.parse(cachedPosts);
+    }
+  } catch (e) {}
+
+  window.sqInitCartFromStorage();
+  db.collection("safaqat_settings").doc("general").get().then(doc => {
+    if (doc.exists) window.sqApplyDynamicDarSettings(doc.data());
+  }).catch(() => {});
+
+  window.sqListenBooks();
+  window.sqLoadFeed();
+  window.sqListenStories();
+  window.sqListenEvents();
+
+  db.collection("safaqat_users").get().then(snap => {
+    snap.forEach(doc => { AppState.allUsers[doc.id] = doc.data(); });
+    try { localStorage.setItem('sq_offline_users_cache', JSON.stringify(AppState.allUsers)); } catch (e) {}
+    window.sqRenderStoriesBar();
+    if (AppState.booksList.length > 0 && AppState.activeMainView === 'store') window.sqRenderLibrarySection();
+    if (AppState.posts.length > 0 && AppState.activeMainView === 'community') window.sqRenderFeed(true);
+  }).catch(() => {});
+
+  auth.onAuthStateChanged(user => {
+    if (AppState.presenceInterval) clearInterval(AppState.presenceInterval);
+    if (AppState.userDocUnsubscribe) AppState.userDocUnsubscribe();
+
+    const authArea = document.getElementById('sq-auth-area');
+    if (user) {
+      AppState.currentUser = user;
+      AppState.isSuperAdmin = window.sqIsSuperAdminEmail(user.email);
+      AppState.isAdmin = AppState.isSuperAdmin;
+
+      window.sqListenNotifs();
+      window.sqListenOrders();
+      window.sqListenTickets();
+
+      const updatePresence = () => {
+        if (AppState.currentUser && navigator.onLine) {
+          db.collection("safaqat_users").doc(AppState.currentUser.uid).update({ lastActive: Date.now() }).catch(() => {});
+        }
+      };
+      updatePresence();
+      AppState.presenceInterval = setInterval(updatePresence, 180000);
+
+      AppState.userDocUnsubscribe = db.collection("safaqat_users").doc(user.uid).onSnapshot(doc => {
+        if (doc.exists) {
+          AppState.userData = doc.data();
+          AppState.allUsers[user.uid] = AppState.userData;
+          if (!AppState.userData.following) AppState.userData.following = [];
+          if (!AppState.userData.blockedUsers) AppState.userData.blockedUsers = [];
+          if (!AppState.userData.bookmarks) AppState.userData.bookmarks = [];
+          if (!AppState.userData.savedBooks) AppState.userData.savedBooks = [];
+          if (!AppState.userData.readingShelf) AppState.userData.readingShelf = {};
+          if (!AppState.userData.readingProgress) AppState.userData.readingProgress = {};
+          if (!AppState.userData.permissions) AppState.userData.permissions = [];
+          if (!AppState.userData.linkedPublishers) AppState.userData.linkedPublishers = [];
+          if (AppState.userData.showOnline === undefined) AppState.userData.showOnline = true;
+          if (!AppState.userData.joinedAt) db.collection("safaqat_users").doc(user.uid).update({ joinedAt: Date.now() });
+
+          // تأكيد حفظ البريد الإلكتروني وتثبيت الإدارة العليا للبريدين الأساسيين فقط
+          if (AppState.isSuperAdmin && (!AppState.userData.isAdminUser || AppState.userData.email !== user.email)) {
+            db.collection("safaqat_users").doc(user.uid).update({ email: user.email, isAdminUser: true }).catch(() => {});
+          } else if (!AppState.isSuperAdmin && !AppState.userData.email && user.email) {
+            db.collection("safaqat_users").doc(user.uid).update({ email: user.email }).catch(() => {});
+          }
+
+          if (AppState.userData.isBanned && !AppState.isSuperAdmin) {
+            auth.signOut();
+            alert("عذراً، تم إيقاف هذا الحساب من قبل إدارة المنصة.");
+            return;
+          }
+
+          if (!AppState.userData.agreedToTerms && !AppState.isSuperAdmin) {
+            window.sqOpenLegalPage('terms', true);
+          }
+
+          if (AppState.userData.theme) window.sqApplyThemeMode(AppState.userData.theme);
+          if (AppState.userData.fontSize) document.documentElement.style.setProperty('--post-font-size', AppState.userData.fontSize);
+          window.sqRenderStoriesBar();
+          if (AppState.activeMainView === 'store') window.sqRenderLibrarySection();
+        } else {
+          const initDoc = {
+            displayName: user.displayName || 'قارئ في صفقات',
+            email: user.email || '',
+            isAdminUser: AppState.isSuperAdmin,
+            photoURL: user.photoURL || DEFAULT_PIC,
+            following: [], blockedUsers: [], bookmarks: [], savedBooks: [],
+            readingShelf: {}, readingProgress: {}, currentlyReadingBookId: '',
+            permissions: [], linkedPublishers: [], publisherWhatsapp: '', commissionRate: 10,
+            aiInterests: { cats: {}, authors: {}, keywords: {}, viewedBooks: [] },
+            theme: 'auto', fontSize: '16.5px', showOnline: true,
+            isBanned: false, isMuted: false, isAuthor: false, isPublisher: false,
+            customName: '', bio: '', statusText: '', nationality: '', birthday: '',
+            agreedToTerms: false, joinedAt: Date.now(), lastActive: Date.now()
+          };
+          AppState.userData = initDoc;
+          AppState.allUsers[user.uid] = initDoc;
+          db.collection("safaqat_users").doc(user.uid).set(initDoc).then(() => {
+            if (!AppState.isSuperAdmin) window.sqOpenLegalPage('terms', true);
+          });
+        }
+        if (authArea) {
+          authArea.innerHTML = `
+            <button class="sq-icon-btn" style="padding:0; overflow:hidden; border:1.5px solid var(--accent);" onclick="window.sqViewProfile('${user.uid}')" title="حسابي">
+              <img src="${getRealPhoto(user.uid, user.photoURL)}" style="width:100%; height:100%; object-fit:cover;">
+            </button>
+          `;
+        }
+        window.sqUpdateBadgesUI();
+        const adminTools = document.getElementById('sq-admin-tools');
+        if (adminTools) adminTools.style.display = AppState.isSuperAdmin ? 'block' : 'none';
+      });
+    } else {
+      AppState.currentUser = null;
+      AppState.isAdmin = false;
+      AppState.isSuperAdmin = false;
+      if (authArea) {
+        authArea.innerHTML = `
+          <button class="sq-btn sq-btn-gold" style="padding:7px 15px!important; font-size:12px!important;" onclick="window.sqLogin()">
+            <i class="fa-brands fa-google"></i> دخول
+          </button>
+        `;
+      }
+      if (!localStorage.getItem('sq_guest_agreed_v18') && !AppState.deepLinkHandled) {
+        setTimeout(() => {
+          if (!AppState.currentUser && !localStorage.getItem('sq_guest_agreed_v18')) {
+            window.sqOpenLegalPage('terms', true);
+          }
+        }, 1200);
+      }
+    }
+  });
+}
+
+// =========================================================
+// 🚀 تشغيل المنصة المتكاملة (الإصدار 1.8 — النسخة الكاملة على GitHub)
+// =========================================================
+sqInitPWAAndOffline();
+sqInitAuth();

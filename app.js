@@ -1915,3 +1915,678 @@ Object.assign(window.SafaqatApp, {
     }
 
 });
+/**
+ * ============================================================================
+ * منصة صفقات كتابية - Safaqat Kitabiya Platform
+ * الملف الرابع: app.js - المحرك البرمجي الشامل
+ * [ الجزء الرابع 4/6 ]: المجتمع الأدبي، البحث الذكي لربط الكتب، والإشعارات ذات التوجيه المباشر
+ * الإصدار: 2.0 Enterprise Edition (كود كامل غير مختصر)
+ * ============================================================================
+ */
+
+Object.assign(window.SafaqatApp, {
+
+    // ========================================================================
+    // 1. تهيئة محرك المجتمع الأدبي والبحث الذكي لربط الكتب ومركز الإشعارات
+    // ========================================================================
+    initCommunityAndNotificationsEngine: function () {
+        // 1. تفعيل حقل البحث الذكي الفوري لربط المنشور بكتاب من المتجر
+        this.attachSmartSearchPicker({
+            inputId: 'post-book-search-input',
+            dropdownId: 'post-book-picker-dropdown',
+            selectedBadgeId: 'post-book-selected-badge',
+            hiddenInputId: 'post-linked-book-id',
+            clearBtnId: 'btn-clear-post-book-picker',
+            getItems: () => {
+                return (this.state.books || []).map((b) => ({
+                    id: b.id,
+                    title: b.title || 'كتاب بدون عنوان',
+                    subtitle: `${b.author || 'مؤلف معتمد'} • ${b.category || 'أدب عام'}`,
+                    extra: b.publisherName || ''
+                }));
+            }
+        });
+
+        // 2. ربط نموذج نشر مساهمة أدبية جديدة في المجتمع
+        const postForm = document.getElementById('community-new-post-form');
+        if (postForm) {
+            postForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.handleCreateCommunityPost();
+            });
+        }
+
+        // 3. ربط شريط تصفية منشورات المجتمع (الكل، مراجعات، اقتباسات، نصوص سردية، نقاشات)
+        const commFilterBtns = document.querySelectorAll('#community-filter-ribbon [data-comm-filter]');
+        commFilterBtns.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                commFilterBtns.forEach((b) => b.classList.remove('active'));
+                btn.classList.add('active');
+                this.state.communityFilter = btn.getAttribute('data-comm-filter') || 'all';
+                this.renderCommunityFeed();
+            });
+        });
+
+        // 4. ربط زر "تحديد كل الإشعارات كمقروءة" داخل صفحة الحساب الشخصي
+        const markAllReadBtn = document.getElementById('btn-mark-all-notif-read');
+        if (markAllReadBtn) {
+            markAllReadBtn.addEventListener('click', () => {
+                this.markAllNotificationsAsRead();
+            });
+        }
+
+        // 5. بدء المزامنة السحابية الفورية لمنشورات المجتمع
+        this.subscribeToCommunityPosts();
+    },
+
+    refreshCommunityBookPickerData: function () {
+        // يتم تحديث القائمة ديناميكياً عبر دالة getItems المربوطة بـ this.state.books
+        const hiddenInput = document.getElementById('post-linked-book-id');
+        if (hiddenInput && hiddenInput.value) {
+            const stillExists = (this.state.books || []).some((b) => b.id === hiddenInput.value);
+            if (!stillExists) {
+                hiddenInput.value = '';
+                const badgeEl = document.getElementById('post-book-selected-badge');
+                if (badgeEl) badgeEl.classList.add('hidden');
+            }
+        }
+    },
+
+    // ========================================================================
+    // 2. المزامنة السحابية وإنشاء وعرض منشورات المجتمع الأدبي
+    // ========================================================================
+    subscribeToCommunityPosts: function () {
+        if (!window.db) return;
+
+        if (this.state.unsubscribers.posts) {
+            this.state.unsubscribers.posts();
+        }
+
+        this.state.unsubscribers.posts = window.db
+            .collection(window.SAFAQAT_COLLECTIONS.POSTS)
+            .onSnapshot((snap) => {
+                const postsList = [];
+                snap.forEach((doc) => {
+                    postsList.push({ id: doc.id, ...doc.data() });
+                });
+
+                // ترتيب المنشورات من الأحدث إلى الأقدم
+                postsList.sort((a, b) => {
+                    const tA = a.createdAt && a.createdAt.seconds ? a.createdAt.seconds : 0;
+                    const tB = b.createdAt && b.createdAt.seconds ? b.createdAt.seconds : 0;
+                    return tB - tA;
+                });
+
+                this.state.posts = postsList;
+                this.renderCommunityFeed();
+            }, (err) => {
+                console.warn("⚠️ تعذر جلب منشورات المجتمع:", err);
+            });
+    },
+
+    handleCreateCommunityPost: async function () {
+        if (!this.state.currentUser) {
+            this.showToast('🔒 يرجى تسجيل الدخول أولاً للمشاركة والنشر في مجتمع صفقات كتابية');
+            this.switchMainView('profile');
+            return;
+        }
+
+        const titleInput = document.getElementById('post-title-input');
+        const contentInput = document.getElementById('post-content-textarea');
+        const typeSelect = document.getElementById('post-type-select');
+        const linkedBookInput = document.getElementById('post-linked-book-id');
+        const clearPickerBtn = document.getElementById('btn-clear-post-book-picker');
+
+        const title = titleInput ? titleInput.value.trim() : '';
+        const content = contentInput ? contentInput.value.trim() : '';
+        const postType = typeSelect ? typeSelect.value : 'review';
+        const linkedBookId = linkedBookInput ? linkedBookInput.value.trim() : '';
+
+        if (!content) {
+            this.showToast('⚠️ يرجى كتابة محتوى المنشور أولاً');
+            return;
+        }
+
+        // جلب بيانات الكتاب المرتبط إن وجد
+        let linkedBookSnapshot = null;
+        if (linkedBookId) {
+            const foundBook = (this.state.books || []).find((b) => b.id === linkedBookId);
+            if (foundBook) {
+                linkedBookSnapshot = {
+                    id: foundBook.id,
+                    title: foundBook.title,
+                    author: foundBook.author || 'مؤلف معتمد',
+                    coverUrl: foundBook.coverUrl || ''
+                };
+            }
+        }
+
+        const authorName = (this.state.userProfile && this.state.userProfile.displayName) ||
+                           this.state.currentUser.displayName ||
+                           'قارئ صفقات كتابية';
+
+        const newPostData = {
+            authorId: this.state.currentUser.uid,
+            authorName: authorName,
+            authorPhoto: this.state.currentUser.photoURL || '',
+            authorRole: (this.state.userProfile && this.state.userProfile.role) || 'member',
+            title: title,
+            content: content,
+            postType: postType,
+            linkedBookId: linkedBookSnapshot ? linkedBookSnapshot.id : '',
+            linkedBook: linkedBookSnapshot,
+            likes: [],
+            commentsCount: 0,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+
+        try {
+            await window.db.collection(window.SAFAQAT_COLLECTIONS.POSTS).add(newPostData);
+
+            // تفريغ الحقول بعد النشر بنجاح
+            if (titleInput) titleInput.value = '';
+            if (contentInput) contentInput.value = '';
+            if (clearPickerBtn) clearPickerBtn.click();
+
+            this.showToast('✨ تم نشر مساهمتك الأدبية في المجتمع بنجاح!');
+        } catch (err) {
+            console.error("Create Post Error:", err);
+            this.showToast('⚠️ تعذر نشر المساهمة حالياً: ' + err.message);
+        }
+    },
+
+    renderCommunityFeed: function () {
+        const feedEl = document.getElementById('community-posts-feed');
+        if (!feedEl) return;
+
+        const filter = this.state.communityFilter || 'all';
+        let posts = [...(this.state.posts || [])];
+
+        if (filter !== 'all') {
+            posts = posts.filter((p) => (p.postType || 'review') === filter);
+        }
+
+        if (posts.length === 0) {
+            feedEl.innerHTML = `
+                <div class="glass-section-card" style="text-align: center; padding: 38px 18px;">
+                    <i class="fa-solid fa-feather-pointed" style="font-size: 2.3rem; color: var(--accent-gold); margin-bottom: 10px;"></i>
+                    <h3 style="font-size: 1rem; margin-bottom: 6px;">لا توجد منشورات في هذا القسم بعد</h3>
+                    <p style="font-size: 0.82rem; color: var(--text-muted);">كن أول من يثري مجتمع صفقات كتابية بمراجعة أو اقتباس أدبي فصيح!</p>
+                </div>
+            `;
+            return;
+        }
+
+        const typeLabels = {
+            review: { label: '📖 مراجعة ونقد', color: 'var(--accent-gold)' },
+            quote: { label: '✨ اقتباس ملهم', color: '#60a5fa' },
+            story: { label: '🖋️ نص سردي', color: '#a78bfa' },
+            discussion: { label: '💬 نقاش القراء', color: 'var(--accent-emerald)' }
+        };
+
+        const currentUid = this.state.currentUser ? this.state.currentUser.uid : null;
+        const htmlParts = [];
+
+        posts.forEach((post, idx) => {
+            const safePostId = this.escapeHtml(post.id);
+            const tInfo = typeLabels[post.postType] || typeLabels.review;
+            const likesArr = Array.isArray(post.likes) ? post.likes : [];
+            const isLiked = currentUid && likesArr.includes(currentUid);
+            const canDelete = this.state.isAdmin || (currentUid && post.authorId === currentUid);
+
+            // التحقق من الكتاب المرتبط (إما من الكائن المحفوظ أو من قائمة الكتب الحية)
+            let linkedBook = post.linkedBook || null;
+            if (!linkedBook && post.linkedBookId) {
+                linkedBook = (this.state.books || []).find((b) => b.id === post.linkedBookId) || null;
+            }
+
+            htmlParts.push(`
+                <article class="glass-section-card" id="community-post-card-${safePostId}" style="transition: all 0.35s ease;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <div class="brand-icon-box" style="width: 40px; height: 40px; border-radius: 50%; font-size: 1rem;">
+                                ${post.authorPhoto
+                                    ? `<img src="${this.escapeHtml(post.authorPhoto)}" alt="${this.escapeHtml(post.authorName)}">`
+                                    : `<i class="fa-solid fa-user-pen"></i>`}
+                            </div>
+                            <div>
+                                <div style="font-weight: 800; font-size: 0.9rem; display: flex; align-items: center; gap: 6px;">
+                                    <span>${this.escapeHtml(post.authorName || 'عضو صفقات كتابية')}</span>
+                                    ${post.authorRole === 'admin' ? `<span class="badge-pill badge-stock-count" style="font-size: 0.62rem;">الإدارة</span>` : ''}
+                                </div>
+                                <span style="font-size: 0.72rem; color: ${tInfo.color}; font-weight: 700;">${tInfo.label}</span>
+                            </div>
+                        </div>
+
+                        ${canDelete ? `
+                            <button type="button" class="header-icon-btn" style="width: 32px; height: 32px; color: var(--accent-danger); font-size: 0.85rem;"
+                                    onclick="SafaqatApp.deleteCommunityPost('${safePostId}')" title="حذف المنشور">
+                                <i class="fa-solid fa-trash-can"></i>
+                            </button>
+                        ` : ''}
+                    </div>
+
+                    ${post.title ? `
+                        <h3 style="font-size: 1.02rem; font-weight: 800; color: var(--accent-gold); margin-bottom: 8px;">
+                            ${this.escapeHtml(post.title)}
+                        </h3>
+                    ` : ''}
+
+                    <div style="font-size: 0.92rem; color: var(--text-primary); line-height: 1.85; white-space: pre-line; margin-bottom: 14px; font-family: var(--font-literary);">
+                        ${this.escapeHtml(post.content)}
+                    </div>
+
+                    ${linkedBook ? `
+                        <div onclick="SafaqatApp.openBookDetailsModal('${this.escapeHtml(linkedBook.id)}')"
+                             style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-radius: var(--radius-sm); background: rgba(212, 175, 55, 0.09); border: 1px solid var(--border-gold); margin-bottom: 12px; cursor: pointer;">
+                            <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+                                <i class="fa-solid fa-book-bookmark" style="color: var(--accent-gold); font-size: 1.1rem;"></i>
+                                <div style="min-width: 0;">
+                                    <div style="font-size: 0.72rem; color: var(--text-muted);">مرتبط بكتاب في المتجر:</div>
+                                    <div style="font-weight: 800; font-size: 0.86rem; color: var(--accent-gold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                        ${this.escapeHtml(linkedBook.title)} —${this.escapeHtml(linkedBook.author || '')}
+                                    </div>
+                                </div>
+                            </div>
+                            <span class="badge-pill badge-stock-count" style="flex-shrink: 0;">استعراض الكتاب <i class="fa-solid fa-arrow-left"></i></span>
+                        </div>
+                    ` : ''}
+
+                    <!-- شريط التفاعل (إعجاب + تعليقات) -->
+                    <div style="display: flex; align-items: center; gap: 12px; padding-top: 10px; border-top: 1px solid var(--border-glass);">
+                        <button type="button" class="category-chip-item ${isLiked ? 'active' : ''}" 
+                                onclick="SafaqatApp.togglePostLike('${safePostId}')">
+                            <i class="${isLiked ? 'fa-solid' : 'fa-regular'} fa-heart" style="color: ${isLiked ? '#ef4444' : 'inherit'};"></i>
+                            <span>أعجبني (${likesArr.length})</span>
+                        </button>
+
+                        <button type="button" class="category-chip-item" 
+                                onclick="SafaqatApp.togglePostCommentsDrawer('${safePostId}')">
+                            <i class="fa-regular fa-comments"></i>
+                            <span>التعليقات والمناقشة (${post.commentsCount || 0})</span>
+                        </button>
+                    </div>
+
+                    <!-- درج التعليقات المترابطة للمنشور -->
+                    <div id="post-comments-drawer-${safePostId}" class="hidden" style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border-glass);">
+                        <div id="post-comments-list-${safePostId}" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; max-height: 260px; overflow-y: auto;"></div>
+                        <form onsubmit="event.preventDefault(); SafaqatApp.submitPostComment('${safePostId}');" style="display: flex; gap: 8px;">
+                            <input type="text" id="post-comment-input-${safePostId}" class="store-search-input" style="height: 38px; padding: 0 12px; font-size: 0.82rem;" placeholder="أضف تعليقاً أدبياً..." required>
+                            <button type="submit" class="btn-add-paper-cart" style="width: auto; padding: 0 16px; border-radius: var(--radius-pill);">
+                                إرسال
+                            </button>
+                        </form>
+                    </div>
+                </article>
+            `);
+
+            // إدراج بطاقة إعلانية شفافة غير مزعجة وفق خوارزمية AdMob في المجتمع
+            if (typeof this.shouldInsertNativeAd === 'function' && this.shouldInsertNativeAd('community', idx + 1)) {
+                htmlParts.push(this.createNativeAdSlotHtml(`comm_ad_${idx}`, 'community'));
+            }
+        });
+
+        feedEl.innerHTML = htmlParts.join('');
+    },
+
+    // ========================================================================
+    // 3. الإعجابات والتعليقات وإرسال الإشعارات التلقائية المرتبطة (Deep Link Triggers)
+    // ========================================================================
+    togglePostLike: async function (postId) {
+        if (!this.state.currentUser || !window.db) {
+            this.showToast('🔒 سجل دخولك للتفاعل مع المنشورات');
+            return;
+        }
+
+        const post = (this.state.posts || []).find((p) => p.id === postId);
+        if (!post) return;
+
+        const uid = this.state.currentUser.uid;
+        const likesArr = Array.isArray(post.likes) ? [...post.likes] : [];
+        const hasLiked = likesArr.includes(uid);
+
+        const updatedLikes = hasLiked
+            ? likesArr.filter((id) => id !== uid)
+            : [...likesArr, uid];
+
+        try {
+            await window.db.collection(window.SAFAQAT_COLLECTIONS.POSTS).doc(postId).update({
+                likes: updatedLikes
+            });
+
+            // إرسال إشعار ذكي لصاحب المنشور عند الإعجاب (إن لم يكن هو نفسه)
+            if (!hasLiked && post.authorId && post.authorId !== uid) {
+                const senderName = (this.state.userProfile && this.state.userProfile.displayName) || 'أحد القراء';
+                await this.createSmartNotification({
+                    recipientId: post.authorId,
+                    title: '❤️ إعجاب جديد بمساهمتك الأدبية',
+                    message: `أعجب (${senderName}) بمنشورك "${post.title || post.content.slice(0, 35)}..."`,
+                    targetType: 'post',
+                    targetId: postId,
+                    extraBookId: post.linkedBookId || ''
+                });
+            }
+        } catch (err) {
+            console.warn("Like update error:", err);
+        }
+    },
+
+    togglePostCommentsDrawer: async function (postId, forceOpen = false) {
+        const drawer = document.getElementById(`post-comments-drawer-${postId}`);
+        if (!drawer) return;
+
+        const willOpen = forceOpen ? true : drawer.classList.contains('hidden');
+        drawer.classList.toggle('hidden', !willOpen);
+
+        if (willOpen) {
+            await this.loadCommentsForPost(postId);
+        }
+    },
+
+    loadCommentsForPost: async function (postId) {
+        const listEl = document.getElementById(`post-comments-list-${postId}`);
+        if (!listEl || !window.db) return;
+
+        listEl.innerHTML = `<div style="font-size: 0.78rem; color: var(--text-muted);">جاري تحميل التعليقات...</div>`;
+
+        try {
+            const snap = await window.db
+                .collection(window.SAFAQAT_COLLECTIONS.COMMENTS)
+                .where('postId', '==', postId)
+                .get();
+
+            const comments = [];
+            snap.forEach((doc) => comments.push({ id: doc.id, ...doc.data() }));
+            comments.sort((a, b) => {
+                const tA = a.createdAt && a.createdAt.seconds ? a.createdAt.seconds : 0;
+                const tB = b.createdAt && b.createdAt.seconds ? b.createdAt.seconds : 0;
+                return tA - tB;
+            });
+
+            if (comments.length === 0) {
+                listEl.innerHTML = `<div style="font-size: 0.78rem; color: var(--text-muted);">لا توجد تعليقات بعد. ابدأ النقاش الآن!</div>`;
+                return;
+            }
+
+            listEl.innerHTML = comments.map((c) => `
+                <div style="padding: 8px 12px; border-radius: var(--radius-sm); background: var(--bg-input); border: 1px solid var(--border-glass);">
+                    <div style="font-weight: 800; font-size: 0.78rem; color: var(--accent-gold); margin-bottom: 2px;">
+                        ${this.escapeHtml(c.authorName || 'قارئ')}
+                    </div>
+                    <div style="font-size: 0.82rem; color: var(--text-secondary);">${this.escapeHtml(c.text)}</div>
+                </div>
+            `).join('');
+        } catch (err) {
+            listEl.innerHTML = `<div style="font-size: 0.78rem; color: var(--accent-danger);">تعذر تحميل التعليقات.</div>`;
+        }
+    },
+
+    submitPostComment: async function (postId) {
+        if (!this.state.currentUser || !window.db) {
+            this.showToast('🔒 يرجى تسجيل الدخول لإضافة تعليق');
+            return;
+        }
+
+        const inputEl = document.getElementById(`post-comment-input-${postId}`);
+        const text = inputEl ? inputEl.value.trim() : '';
+        if (!text) return;
+
+        const post = (this.state.posts || []).find((p) => p.id === postId);
+        const authorName = (this.state.userProfile && this.state.userProfile.displayName) ||
+                           this.state.currentUser.displayName ||
+                           'قارئ صفقات كتابية';
+
+        try {
+            inputEl.value = '';
+            await window.db.collection(window.SAFAQAT_COLLECTIONS.COMMENTS).add({
+                postId: postId,
+                authorId: this.state.currentUser.uid,
+                authorName: authorName,
+                text: text,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+
+            await window.db.collection(window.SAFAQAT_COLLECTIONS.POSTS).doc(postId).update({
+                commentsCount: firebase.firestore.FieldValue.increment(1)
+            });
+
+            await this.loadCommentsForPost(postId);
+
+            // إرسال إشعار ذكي مباشر لصاحب المنشور ينقله فوراً إلى التعليق عند الضغط عليه
+            if (post && post.authorId && post.authorId !== this.state.currentUser.uid) {
+                await this.createSmartNotification({
+                    recipientId: post.authorId,
+                    title: '💬 تعليق جديد على منشورك',
+                    message: `علق (${authorName}) على مساهمتك: "${text.slice(0, 45)}..."`,
+                    targetType: 'post',
+                    targetId: postId,
+                    extraBookId: post.linkedBookId || ''
+                });
+            }
+        } catch (err) {
+            this.showToast('⚠️ تعذر إرسال التعليق حالياً');
+        }
+    },
+
+    deleteCommunityPost: async function (postId) {
+        if (!window.db) return;
+        try {
+            await window.db.collection(window.SAFAQAT_COLLECTIONS.POSTS).doc(postId).delete();
+            this.showToast('🗑️ تم حذف المنشور من المجتمع');
+        } catch (err) {
+            this.showToast('⚠️ تعذر حذف المنشور: ' + err.message);
+        }
+    },
+
+    // ========================================================================
+    // 4. مركز الإشعارات المستقل في صفحة الحساب الشخصي + التوجيه الذكي المباشر (Deep Linking)
+    // ملاحظة هندسية صارمة: لا توجد أي أيقونة إشعارات في الهيدر العلوي إطلاقاً
+    // ========================================================================
+    createSmartNotification: async function (notifData) {
+        if (!window.db || !notifData.recipientId) return;
+        try {
+            await window.db.collection(window.SAFAQAT_COLLECTIONS.NOTIFICATIONS).add({
+                recipientId: notifData.recipientId,
+                title: notifData.title || 'إشعار من صفقات كتابية',
+                message: notifData.message || '',
+                targetType: notifData.targetType || 'store', // 'book' | 'post' | 'library' | 'order'
+                targetId: notifData.targetId || '',
+                extraBookId: notifData.extraBookId || '',
+                read: false,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+        } catch (e) {
+            console.warn("Notification creation warning:", e);
+        }
+    },
+
+    subscribeToUserNotifications: function (userId) {
+        if (!window.db || !userId) return;
+
+        if (this.state.unsubscribers.notifications) {
+            this.state.unsubscribers.notifications();
+        }
+
+        this.state.unsubscribers.notifications = window.db
+            .collection(window.SAFAQAT_COLLECTIONS.NOTIFICATIONS)
+            .where('recipientId', '==', userId)
+            .onSnapshot((snap) => {
+                const list = [];
+                snap.forEach((doc) => list.push({ id: doc.id, ...doc.data() }));
+
+                list.sort((a, b) => {
+                    const tA = a.createdAt && a.createdAt.seconds ? a.createdAt.seconds : 0;
+                    const tB = b.createdAt && b.createdAt.seconds ? b.createdAt.seconds : 0;
+                    return tB - tA;
+                });
+
+                this.state.notifications = list;
+                this.renderProfileNotificationsCenter();
+            }, (err) => {
+                console.warn("⚠️ تعذر جلب الإشعارات:", err);
+            });
+    },
+
+    clearUserNotifications: function () {
+        if (this.state.unsubscribers.notifications) {
+            this.state.unsubscribers.notifications();
+            this.state.unsubscribers.notifications = null;
+        }
+        this.state.notifications = [];
+        this.renderProfileNotificationsCenter();
+    },
+
+    renderProfileNotificationsCenter: function () {
+        const listEl = document.getElementById('profile-notifications-list');
+        const unreadBadge = document.getElementById('profile-unread-notif-badge');
+        const navDot = document.getElementById('nav-profile-notif-dot');
+
+        const notifs = this.state.notifications || [];
+        const unreadCount = notifs.filter((n) => !n.read).length;
+
+        if (unreadBadge) {
+            unreadBadge.textContent = `${unreadCount} جديد`;
+            unreadBadge.classList.toggle('hidden', unreadCount === 0);
+        }
+
+        if (navDot) {
+            navDot.classList.toggle('hidden', unreadCount === 0);
+        }
+
+        if (!listEl) return;
+
+        if (!this.state.currentUser) {
+            listEl.innerHTML = `
+                <div style="text-align: center; padding: 24px 12px; color: var(--text-muted); font-size: 0.82rem;">
+                    سجل دخولك لتلقي تنبيهات الكتب الجديدة والتفاعلات على مساهماتك الأدبية.
+                </div>
+            `;
+            return;
+        }
+
+        if (notifs.length === 0) {
+            listEl.innerHTML = `
+                <div style="text-align: center; padding: 24px 12px; color: var(--text-muted); font-size: 0.82rem;">
+                    <i class="fa-regular fa-bell-slash" style="font-size: 1.5rem; margin-bottom: 8px; display: block; color: var(--accent-gold);"></i>
+                    لا توجد لديك إشعارات حالياً.
+                </div>
+            `;
+            return;
+        }
+
+        listEl.innerHTML = notifs.map((n) => {
+            const safeId = this.escapeHtml(n.id);
+            const iconClass = n.targetType === 'book'
+                ? 'fa-book-open'
+                : (n.targetType === 'post' ? 'fa-comments' : 'fa-bell');
+
+            return `
+                <div class="notification-deep-item ${!n.read ? 'unread' : ''}" 
+                     onclick="SafaqatApp.executeNotificationDeepLink('${safeId}')">
+                    <div style="display: flex; align-items: flex-start; gap: 10px;">
+                        <div style="width: 34px; height: 34px; border-radius: 10px; background: rgba(212, 175, 55, 0.14); color: var(--accent-gold); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                            <i class="fa-solid ${iconClass}"></i>
+                        </div>
+                        <div>
+                            <div style="font-weight: 800; font-size: 0.86rem; color: var(--text-primary);">
+                                ${this.escapeHtml(n.title)}
+                            </div>
+                            <div style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 2px;">
+                                ${this.escapeHtml(n.message)}
+                            </div>
+                        </div>
+                    </div>
+                    <span class="badge-pill badge-stock-count" style="flex-shrink: 0; font-size: 0.68rem;">
+                        انتقال مباشر <i class="fa-solid fa-arrow-up-left-from-circle"></i>
+                    </span>
+                </div>
+            `;
+        }).join('');
+    },
+
+    /**
+     * التوجيه الذكي المباشر (Deep Linking):
+     * ينقل المستخدم فوراً من الإشعار إلى المكان المرتبط به تماماً (الكتاب أو المنشور أو مكتبتي)
+     */
+    executeNotificationDeepLink: async function (notificationId) {
+        const notif = (this.state.notifications || []).find((n) => n.id === notificationId);
+        if (!notif) return;
+
+        // 1. تحديث حالة الإشعار إلى مقروء في السحابة
+        if (!notif.read && window.db) {
+            try {
+                await window.db.collection(window.SAFAQAT_COLLECTIONS.NOTIFICATIONS).doc(notificationId).update({
+                    read: true
+                });
+            } catch (e) {
+                console.warn("Mark notification read warning:", e);
+            }
+        }
+
+        // 2. التوجيه المباشر حسب نوع الهدف (targetType)
+        if (notif.targetType === 'book' && notif.targetId) {
+            this.switchMainView('store');
+            setTimeout(() => {
+                this.openBookDetailsModal(notif.targetId);
+            }, 120);
+            return;
+        }
+
+        if (notif.targetType === 'post' && notif.targetId) {
+            // إعادة ضبط فلتر المجتمع إلى "الكل" لضمان ظهور المنشور المطلوب
+            this.state.communityFilter = 'all';
+            this.renderCommunityFeed();
+            this.switchMainView('community');
+
+            setTimeout(() => {
+                const postCard = document.getElementById(`community-post-card-${notif.targetId}`);
+                if (postCard) {
+                    postCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    postCard.style.borderColor = 'var(--accent-gold)';
+                    postCard.style.boxShadow = '0 0 0 3px var(--accent-gold-glow)';
+                    this.togglePostCommentsDrawer(notif.targetId, true);
+
+                    setTimeout(() => {
+                        postCard.style.boxShadow = '';
+                    }, 3000);
+                } else {
+                    this.showToast('📌 تم فتح المجتمع الأدبي');
+                }
+            }, 220);
+            return;
+        }
+
+        if (notif.targetType === 'library') {
+            this.switchMainView('library');
+            if (notif.targetId && typeof this.openProtectedBookReader === 'function') {
+                setTimeout(() => this.openProtectedBookReader(notif.targetId), 200);
+            }
+            return;
+        }
+
+        // افتراضياً التوجه للمتجر
+        this.switchMainView('store');
+    },
+
+    markAllNotificationsAsRead: async function () {
+        if (!window.db || !this.state.currentUser) return;
+        const unreadList = (this.state.notifications || []).filter((n) => !n.read);
+        if (unreadList.length === 0) {
+            this.showToast('✅ جميع إشعاراتك مقروءة بالفعل');
+            return;
+        }
+
+        try {
+            const batch = window.db.batch();
+            unreadList.forEach((n) => {
+                const ref = window.db.collection(window.SAFAQAT_COLLECTIONS.NOTIFICATIONS).doc(n.id);
+                batch.update(ref, { read: true });
+            });
+            await batch.commit();
+            this.showToast('✨ تم تحديد جميع الإشعارات كمقروءة');
+        } catch (err) {
+            this.showToast('⚠️ تعذر تحديث الإشعارات حالياً');
+        }
+    }
+
+});

@@ -3199,7 +3199,7 @@ window.sqReportPost = function(id) {
     db.collection("safaqat_reports").add({
       postId: id, postSnippet: decodeEntities(post.text || 'منشور مصور').substring(0, 180), postAuthorUid: post.uid,
       reporterUid: AppState.currentUser.uid, reason: reason || 'مخالفة القوانين', time: Date.now()
-    }).then(() => sqShowToast("تم إرسال البلاغ لقسيمة الرقابة", "success"));
+    }).then(() => sqShowToast("تم إرسال البلاغ لقسم الرقابة", "success"));
   });
 };
 

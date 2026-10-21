@@ -1461,3 +1461,457 @@ Object.assign(window.SafaqatApp, {
     }
 
 });
+/**
+ * ============================================================================
+ * منصة صفقات كتابية - Safaqat Kitabiya Platform
+ * الملف الرابع: app.js - المحرك البرمجي الشامل
+ * [ الجزء الثالث 3/6 ]: خوارزمية إعلانات AdMob النظيفة + محرك سلة النسخ الورقية والفواتير
+ * الإصدار: 2.0 Enterprise Edition (كود كامل غير مختصر)
+ * ============================================================================
+ */
+
+Object.assign(window.SafaqatApp, {
+
+    // ========================================================================
+    // 1. خوارزمية إعلانات Google AdMob النظيفة وغير المزعجة (Smart Native Ads Engine)
+    // ========================================================================
+
+    /**
+     * حساب المسافة الفاصلة بين كل إعلان وآخر بناءً على اختيار الإدارة (تخفيف / توازن / تكثيف)
+     */
+    getEffectiveAdInterval: function (contextType = 'store') {
+        const admob = (window.SafaqatConfig && window.SafaqatConfig.liveSettings.admobConfig) || {};
+        const density = admob.densityMode || 'balanced';
+
+        let baseInterval = contextType === 'community'
+            ? (parseInt(admob.postsInterval, 10) || 6)
+            : (parseInt(admob.booksInterval, 10) || 8);
+
+        if (density === 'light') {
+            // وضع التخفيف: مضاعفة المسافة لتقليل ظهور الإعلانات لأقصى درجة
+            baseInterval = Math.max(baseInterval + 4, 10);
+        } else if (density === 'intensive') {
+            // وضع التكثيف المدروس: تقريب المسافة دون إفساد تجربة القراءة
+            baseInterval = Math.max(Math.floor(baseInterval * 0.65), 3);
+        }
+
+        return Math.max(baseInterval, 2);
+    },
+
+    /**
+     * تحديد ما إذا كان يجب إدراج بطاقة إعلانية شفافة في الموضع الحالي
+     */
+    shouldInsertNativeAd: function (contextType, itemIndex1Based) {
+        if (!window.SafaqatConfig || !window.SafaqatConfig.liveSettings) return false;
+        const admob = window.SafaqatConfig.liveSettings.admobConfig || {};
+
+        // 1. إذا أوقفت الإدارة الإعلانات من لوحة التحكم، لا يظهر أي إعلان نهائياً
+        if (!admob.enabled) return false;
+
+        // 2. إذا كان المستخدم مشتركاً في باقة VIP وميزة إخفاء الإعلانات للمشتركين مفعلة
+        const isVip = this.state.userProfile &&
+                      this.state.userProfile.vipSubscription &&
+                      this.state.userProfile.vipSubscription.active;
+        if (admob.hideForVipSubscribers && isVip) return false;
+
+        // 3. التحقق من تفعيل الإعلانات في القسم الحالي (المتجر أو المجتمع)
+        if (contextType === 'store' && admob.showInStore === false) return false;
+        if (contextType === 'community' && admob.showInCommunity === false) return false;
+
+        // 4. فحص المسافة وفق الخوارزمية النظيفة
+        const interval = this.getEffectiveAdInterval(contextType);
+        return itemIndex1Based > 0 && (itemIndex1Based % interval === 0);
+    },
+
+    /**
+     * إنشاء كود البطاقة الإعلانية الأفقية الشفافة مع زر الإغلاق الفوري (×)
+     */
+    createNativeAdSlotHtml: function (slotId, contextType = 'store') {
+        // إذا قام المتصفح بإغلاق هذه البطاقة مسبقاً خلال تصفحه، لا نعيد إظهارها له
+        if (this.state.dismissedAdSlots.has(slotId)) {
+            return '';
+        }
+
+        const admob = (window.SafaqatConfig && window.SafaqatConfig.liveSettings.admobConfig) || {};
+        const allowDismiss = admob.allowUserDismiss !== false;
+        const publisherId = (admob.publisherId || '').trim();
+        const unitId = (admob.nativeAdUnitId || admob.bannerAdUnitId || '').trim();
+        const safeSlotId = this.escapeHtml(slotId);
+
+        // تحميل سكريبت Google AdMob / AdSense تلقائياً عند وجود معرف ناشر حقيقي
+        if (publisherId) {
+            this.ensureAdMobScriptLoaded(publisherId);
+        }
+
+        // إذا كان التطبيق يعمل داخل بيئة أندرويد ومربوطاً بجسر AdMob الأصلي
+        if (window.SafaqatNativeBridge && typeof window.SafaqatNativeBridge.requestNativeAdCard === 'function' && unitId) {
+            setTimeout(() => {
+                try {
+                    window.SafaqatNativeBridge.requestNativeAdCard(slotId, unitId);
+                } catch (e) {
+                    console.warn("AdMob Native Bridge warning:", e);
+                }
+            }, 150);
+        }
+
+        return `
+            <div class="safaqat-native-ad-slot" id="ad-container-${safeSlotId}" data-ad-context="${this.escapeHtml(contextType)}">
+                <span class="native-ad-badge">إعلان ممول</span>
+                
+                <div class="native-ad-content" id="ad-body-${safeSlotId}">
+                    ${publisherId && unitId ? `
+                        <ins class="adsbygoogle"
+                             style="display:block; width:100%; min-height:46px;"
+                             data-ad-client="${this.escapeHtml(publisherId)}"
+                             data-ad-slot="${this.escapeHtml(unitId)}"
+                             data-ad-format="fluid"
+                             data-full-width-responsive="true"></ins>
+                    ` : `
+                        <i class="fa-solid fa-sparkles" style="color: var(--accent-gold);"></i>
+                        <span>مساحة إعلانية ذكية (AdMob Native) —تظهر بشكل شفاف وغير مزعج، ويمكنك تخصيص معرفها أو إيقافها من لوحة الإدارة.</span>
+                    `}
+                </div>
+
+                ${allowDismiss ? `
+                    <button type="button" class="native-ad-close-btn" 
+                            onclick="SafaqatApp.dismissNativeAdSlot('${safeSlotId}')" 
+                            title="إخفاء هذا الإعلان فوراً">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                ` : ''}
+            </div>
+        `;
+    },
+
+    /**
+     * إغلاق البطاقة الإعلانية فوراً عند ضغط المستخدم على زر (×)
+     */
+    dismissNativeAdSlot: function (slotId) {
+        this.state.dismissedAdSlots.add(slotId);
+        const adEl = document.getElementById(`ad-container-${slotId}`);
+        if (adEl) {
+            adEl.style.opacity = '0';
+            adEl.style.transform = 'scale(0.96)';
+            setTimeout(() => adEl.remove(), 200);
+        }
+    },
+
+    /**
+     * حقن سكريبت إعلانات جوجل مرة واحدة فقط عند تفعيله من الإدارة
+     */
+    ensureAdMobScriptLoaded: function (publisherId) {
+        if (!publisherId || document.getElementById('safaqat-google-ads-sdk')) return;
+        const cleanClient = publisherId.startsWith('ca-') ? publisherId : `ca-${publisherId}`;
+        const script = document.createElement('script');
+        script.id = 'safaqat-google-ads-sdk';
+        script.async = true;
+        script.crossOrigin = 'anonymous';
+        script.src = `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${encodeURIComponent(cleanClient)}`;
+        document.head.appendChild(script);
+    },
+
+    // ========================================================================
+    // 2. محرك سلة المشتريات للنسخ الورقية والفواتير الذكية عبر الواتساب
+    // ========================================================================
+    initShoppingCartEngine: function () {
+        this.updateHeaderCartBadge();
+
+        const openCartBtn = document.getElementById('btn-open-cart');
+        if (openCartBtn) {
+            openCartBtn.addEventListener('click', () => {
+                this.openShoppingCartModal();
+            });
+        }
+    },
+
+    saveCartToStorage: function () {
+        localStorage.setItem('safaqat_paper_cart', JSON.stringify(this.state.cart));
+        this.updateHeaderCartBadge();
+    },
+
+    updateHeaderCartBadge: function () {
+        const badgeEl = document.getElementById('header-cart-count');
+        if (!badgeEl) return;
+        const totalItems = (this.state.cart || []).reduce((sum, item) => sum + (parseInt(item.quantity, 10) || 1), 0);
+        badgeEl.textContent = totalItems;
+        badgeEl.style.display = totalItems > 0 ? 'flex' : 'none';
+    },
+
+    /**
+     * إضافة كتاب ورقي إلى السلة (مع منع النسخ الرقمية الحصرية ومراعاة المخزون المطبوع)
+     */
+    addToPaperCart: function (bookId) {
+        const book = (this.state.books || []).find((b) => b.id === bookId);
+        if (!book) {
+            this.showToast('⚠️ لم يتم العثور على الكتاب المطلوب');
+            return;
+        }
+
+        // حماية صارمة: الكتب المعينة كـ "نسخة رقمية فقط" لا تدخل سلة الشحن الورقي أبداً
+        if (book.isDigitalOnly === true) {
+            this.showToast('📱 هذا الإصدار رقمي حصري ولا يتضمن نسخة ورقية للشحن');
+            return;
+        }
+
+        // التحقق من عداد النسخ المطبوعة (إذا كانت الإدارة قد حددت عدداً معيناً)
+        const hasExplicitStock = book.printStock !== undefined && book.printStock !== null && String(book.printStock).trim() !== '';
+        const maxStock = hasExplicitStock ? parseInt(book.printStock, 10) : null;
+
+        if (hasExplicitStock && !isNaN(maxStock) && maxStock <= 0) {
+            this.showToast('⚠️ عذراً، نفدت النسخ المطبوعة المتاحة من هذا الكتاب حالياً');
+            return;
+        }
+
+        const existingIndex = this.state.cart.findIndex((item) => item.bookId === bookId);
+        if (existingIndex > -1) {
+            const currentQty = this.state.cart[existingIndex].quantity || 1;
+            if (hasExplicitStock && !isNaN(maxStock) && currentQty + 1 > maxStock) {
+                this.showToast(`⚠️ الحد الأقصى المتاح من النسخ المطبوعة هو (${maxStock}) نسخ فقط`);
+                return;
+            }
+            this.state.cart[existingIndex].quantity = currentQty + 1;
+        } else {
+            this.state.cart.push({
+                bookId: book.id,
+                title: book.title,
+                author: book.author || 'مؤلف معتمد',
+                publisherName: book.publisherName || 'دار صفقات كتابية',
+                coverUrl: book.coverUrl || '',
+                paperPrice: parseFloat(book.paperPrice ?? book.price ?? 0),
+                customPaperPrices: book.customPaperPrices || null,
+                maxStock: maxStock,
+                quantity: 1
+            });
+        }
+
+        this.saveCartToStorage();
+        this.showToast(`🛍️ تمت إضافة النسخة الورقية من "${book.title}" إلى السلة`);
+    },
+
+    changeCartItemQuantity: function (bookId, delta) {
+        const idx = this.state.cart.findIndex((item) => item.bookId === bookId);
+        if (idx === -1) return;
+
+        const item = this.state.cart[idx];
+        const nextQty = (item.quantity || 1) + delta;
+
+        if (nextQty <= 0) {
+            this.removeCartItem(bookId);
+            return;
+        }
+
+        // احترام سقف المخزون المطبوع إن وجد
+        if (item.maxStock !== null && item.maxStock !== undefined && !isNaN(item.maxStock) && nextQty > item.maxStock) {
+            this.showToast(`⚠️ لا يتوفر في المخزون المطبوع سوى (${item.maxStock}) نسخ`);
+            return;
+        }
+
+        item.quantity = nextQty;
+        this.saveCartToStorage();
+        this.renderShoppingCartModal();
+    },
+
+    removeCartItem: function (bookId) {
+        this.state.cart = this.state.cart.filter((item) => item.bookId !== bookId);
+        this.saveCartToStorage();
+        this.renderShoppingCartModal();
+    },
+
+    openShoppingCartModal: function () {
+        const modal = document.getElementById('modal-shopping-cart');
+        if (!modal) return;
+        this.renderShoppingCartModal();
+        modal.classList.remove('hidden');
+    },
+
+    renderShoppingCartModal: function () {
+        const itemsContainer = document.getElementById('shopping-cart-items-container');
+        const footerContainer = document.getElementById('shopping-cart-footer');
+        if (!itemsContainer || !footerContainer) return;
+
+        const cart = this.state.cart || [];
+        if (cart.length === 0) {
+            itemsContainer.innerHTML = `
+                <div style="text-align: center; padding: 36px 16px;">
+                    <i class="fa-solid fa-bag-shopping" style="font-size: 2.4rem; color: var(--text-muted); margin-bottom: 10px;"></i>
+                    <h4 style="font-size: 0.95rem; margin-bottom: 4px;">سلة النسخ الورقية فارغة حالياً</h4>
+                    <p style="font-size: 0.78rem; color: var(--text-muted);">تصفح المتجر وأضف الكتب الورقية المطبوعة لطلبها وتوصيلها إليك.</p>
+                </div>
+            `;
+            footerContainer.innerHTML = '';
+            return;
+        }
+
+        const currCode = window.SafaqatConfig.currentUserCurrency || 'SAR';
+        const currMap = window.SafaqatConfig.liveSettings.currencySystem.supportedCurrencies || {};
+        const currInfo = currMap[currCode] || { symbol: 'ر.س', rateFromSAR: 1 };
+
+        let totalConvertedAmount = 0;
+
+        itemsContainer.innerHTML = cart.map((item) => {
+            // حساب سعر الوحدة بالعملة المختارة
+            let unitPriceInTargetCurr = 0;
+            if (item.customPaperPrices && item.customPaperPrices[currCode]) {
+                unitPriceInTargetCurr = parseFloat(item.customPaperPrices[currCode]);
+            } else {
+                unitPriceInTargetCurr = (parseFloat(item.paperPrice) || 0) * (parseFloat(currInfo.rateFromSAR) || 1);
+            }
+
+            const lineTotal = unitPriceInTargetCurr * (item.quantity || 1);
+            totalConvertedAmount += lineTotal;
+
+            const formattedLineTotal = `${lineTotal >= 100 ? Math.round(lineTotal) : lineTotal.toFixed(2)} ${currInfo.symbol}`;
+            const safeId = this.escapeHtml(item.bookId);
+
+            return `
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; border-radius: var(--radius-sm); background: var(--bg-input); border: 1px solid var(--border-glass); margin-bottom: 8px;">
+                    <div style="flex: 1; min-width: 0;">
+                        <div style="font-weight: 800; font-size: 0.88rem; color: var(--text-primary);">${this.escapeHtml(item.title)}</div>
+                        <div style="font-size: 0.74rem; color: var(--text-muted);">${this.escapeHtml(item.publisherName || '')} • الإجمالي: <strong style="color: var(--accent-gold);">${formattedLineTotal}</strong></div>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <button type="button" class="header-icon-btn" style="width: 28px; height: 28px; font-size: 0.8rem;" onclick="SafaqatApp.changeCartItemQuantity('${safeId}', -1)">
+                            <i class="fa-solid fa-minus"></i>
+                        </button>
+                        <strong style="min-width: 22px; text-align: center; font-size: 0.86rem;">${item.quantity}</strong>
+                        <button type="button" class="header-icon-btn" style="width: 28px; height: 28px; font-size: 0.8rem;" onclick="SafaqatApp.changeCartItemQuantity('${safeId}', 1)">
+                            <i class="fa-solid fa-plus"></i>
+                        </button>
+                        <button type="button" class="header-icon-btn" style="width: 28px; height: 28px; font-size: 0.8rem; color: var(--accent-danger);" onclick="SafaqatApp.removeCartItem('${safeId}')" title="حذف">
+                            <i class="fa-solid fa-trash-can"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        const formattedGrandTotal = `${totalConvertedAmount >= 100 ? Math.round(totalConvertedAmount) : totalConvertedAmount.toFixed(2)} ${currInfo.symbol}`;
+        const defaultName = (this.state.userProfile && this.state.userProfile.displayName) || '';
+
+        footerContainer.innerHTML = `
+            <div style="padding: 12px; border-radius: var(--radius-sm); background: rgba(212, 175, 55, 0.1); border: 1px solid var(--border-gold); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 0.88rem; font-weight: 700;">الإجمالي التقديري للنسخ الورقية:</span>
+                <strong style="font-size: 1.08rem; color: var(--accent-gold);">${formattedGrandTotal}</strong>
+            </div>
+
+            <form id="paper-checkout-whatsapp-form" style="display: flex; flex-direction: column; gap: 10px;">
+                <input type="text" id="order-customer-name" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm);" 
+                       placeholder="الاسم الكامل للمستلم" value="${this.escapeHtml(defaultName)}" required>
+                <input type="tel" id="order-customer-phone" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm);" 
+                       placeholder="رقم الجوال للتواصل والتوصيل" required>
+                <input type="text" id="order-customer-address" class="store-search-input" style="height: 40px; padding: 0 12px; border-radius: var(--radius-sm);" 
+                       placeholder="المدينة والعنوان التفصيلي لتسليم المندوب" required>
+                
+                <select id="order-payment-method" style="background: var(--bg-input); border: 1px solid var(--border-glass); border-radius: var(--radius-sm); padding: 9px 12px; font-size: 0.84rem;">
+                    <option value="الدفع عند الاستلام للمندوب">💵 الدفع عند الاستلام (عند وصول المندوب)</option>
+                    <option value="تحويل بنكي / محفظة إلكترونية">🏦 تحويل بنكي / محفظة إلكترونية عبر الواتساب</option>
+                </select>
+
+                <button type="submit" class="btn-add-paper-cart" style="padding: 12px; font-size: 0.92rem; background: linear-gradient(135deg, #10b981, #059669); color: #fff;">
+                    <i class="fa-brands fa-whatsapp" style="font-size: 1.15rem;"></i>
+                    <span>إصدار الفاتورة وإرسال الطلب عبر واتساب</span>
+                </button>
+            </form>
+        `;
+
+        const checkoutForm = document.getElementById('paper-checkout-whatsapp-form');
+        if (checkoutForm) {
+            checkoutForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.submitPaperCartOrder(formattedGrandTotal, currCode);
+            });
+        }
+    },
+
+    /**
+     * حفظ الفاتورة في السحابة، تحديث المخزون الورقي الاختياري، وتوجيه الطلب إلى الواتساب
+     */
+    submitPaperCartOrder: async function (formattedGrandTotal, currencyCode) {
+        const nameEl = document.getElementById('order-customer-name');
+        const phoneEl = document.getElementById('order-customer-phone');
+        const addressEl = document.getElementById('order-customer-address');
+        const payMethodEl = document.getElementById('order-payment-method');
+
+        const customerName = nameEl ? nameEl.value.trim() : '';
+        const customerPhone = phoneEl ? phoneEl.value.trim() : '';
+        const customerAddress = addressEl ? addressEl.value.trim() : '';
+        const paymentMethod = payMethodEl ? payMethodEl.value : 'الدفع عند الاستلام';
+
+        if (!customerName || !customerPhone || !customerAddress) {
+            this.showToast('⚠️ يرجى تعبئة الاسم ورقم الجوال والعنوان لإتمام الطلب');
+            return;
+        }
+
+        const invoiceCode = `SK-${Math.floor(100000 + Math.random() * 900000)}`;
+        const cartItems = [...this.state.cart];
+
+        const orderPayload = {
+            invoiceCode: invoiceCode,
+            userId: this.state.currentUser ? this.state.currentUser.uid : 'guest',
+            customerName: customerName,
+            customerPhone: customerPhone,
+            customerAddress: customerAddress,
+            paymentMethod: paymentMethod,
+            currencyCode: currencyCode,
+            formattedTotal: formattedGrandTotal,
+            items: cartItems,
+            status: 'pending_delivery',
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+
+        // 1. حفظ الفاتورة في Firestore وإنقاص عداد النسخ المطبوعة إن وجد
+        if (window.db) {
+            try {
+                await window.db.collection(window.SAFAQAT_COLLECTIONS.ORDERS).add(orderPayload);
+
+                // تحديث المخزون المطبوع للكتب التي لها عداد مخزون محدد
+                for (const item of cartItems) {
+                    const liveBook = (this.state.books || []).find((b) => b.id === item.bookId);
+                    if (liveBook && liveBook.printStock !== undefined && liveBook.printStock !== null && String(liveBook.printStock).trim() !== '') {
+                        const currentStock = parseInt(liveBook.printStock, 10);
+                        if (!isNaN(currentStock) && currentStock > 0) {
+                            const updatedStock = Math.max(0, currentStock - (item.quantity || 1));
+                            await window.db.collection(window.SAFAQAT_COLLECTIONS.BOOKS).doc(liveBook.id).update({
+                                printStock: updatedStock
+                            });
+                        }
+                    }
+                }
+            } catch (err) {
+                console.warn("⚠️ تم تجهيز فاتورة الواتساب محلياً:", err);
+            }
+        }
+
+        // 2. بناء رسالة الفاتورة الاحترافية للواتساب
+        const itemsLines = cartItems.map((it, i) => `${i + 1}. كتاب: ${it.title} (الكمية: ${it.quantity})`).join('\n');
+        const messageText = [
+            `📚 *فاتورة طلب نسخ ورقية - منصة صفقات كتابية*`,
+            `🔢 *رقم الفاتورة:* ${invoiceCode}`,
+            `────────────────────`,
+            `👤 *العميل:* ${customerName}`,
+            `📱 *الجوال:* ${customerPhone}`,
+            `📍 *العنوان:* ${customerAddress}`,
+            `💳 *طريقة الدفع:* ${paymentMethod}`,
+            `────────────────────`,
+            `📦 *الكتب المطلوبة:*`,
+            itemsLines,
+            `────────────────────`,
+            `💰 *الإجمالي المطلوب:* ${formattedGrandTotal}`,
+            `شكراً لاختياركم صفقات كتابية!`
+        ].join('\n');
+
+        const rawWhatsapp = (window.SafaqatConfig.liveSettings.branding.officialWhatsappNumber || '966500000000').replace(/\D/g, '');
+        const waUrl = `https://wa.me/${rawWhatsapp}?text=${encodeURIComponent(messageText)}`;
+
+        // تفريغ السلة وإغلاق النافذة
+        this.state.cart = [];
+        this.saveCartToStorage();
+        const modal = document.getElementById('modal-shopping-cart');
+        if (modal) modal.classList.add('hidden');
+
+        this.showToast(`✅ تم إصدار الفاتورة (${invoiceCode}) وجاري فتح الواتساب...`);
+        window.open(waUrl, '_blank');
+    }
+
+});

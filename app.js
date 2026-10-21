@@ -2590,3 +2590,885 @@ Object.assign(window.SafaqatApp, {
     }
 
 });
+/**
+ * ============================================================================
+ * منصة صفقات كتابية - Safaqat Kitabiya Platform
+ * الملف الرابع: app.js - المحرك البرمجي الشامل
+ * [ الجزء الخامس 5/6 ]: مكتبتي الرقمية، بوابة التطبيق، والقارئ الآمن المحمي مع القفز التلقائي (Auto-Jump)
+ * الإصدار: 2.0 Enterprise Edition (كود كامل غير مختصر)
+ * ============================================================================
+ */
+
+Object.assign(window.SafaqatApp, {
+
+    // ========================================================================
+    // 1. تهيئة محرك القارئ الآمن، الخزنة المحلية بدون إنترنت، وأدوات التحكم
+    // ========================================================================
+    initProtectedReaderEngine: function () {
+        // تهيئة عامل PDF.js الرسمي لعرض صفحات الـ PDF كصور Canvas محمية بدون شريط تحميل
+        if (window.pdfjsLib) {
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+                'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        }
+
+        // زر إغلاق القارئ مع الحفظ الفوري لآخر صفحة وصل إليها القارئ
+        const closeBtn = document.getElementById('btn-close-protected-reader');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                this.closeProtectedBookReader();
+            });
+        }
+
+        // أزرار التنقل بين الصفحات (السابقة / التالية)
+        const prevBtn = document.getElementById('btn-reader-prev-page');
+        const nextBtn = document.getElementById('btn-reader-next-page');
+        if (prevBtn) {
+            prevBtn.addEventListener('click', () => {
+                if (this.state.reader.currentPage > 1) {
+                    this.goToReaderPage(this.state.reader.currentPage - 1);
+                }
+            });
+        }
+        if (nextBtn) {
+            nextBtn.addEventListener('click', () => {
+                if (this.state.reader.currentPage < this.state.reader.totalPages) {
+                    this.goToReaderPage(this.state.reader.currentPage + 1);
+                }
+            });
+        }
+
+        // حقل القفز المباشر لأي رقم صفحة يكتبه القارئ
+        const pageInput = document.getElementById('reader-direct-page-input');
+        if (pageInput) {
+            pageInput.addEventListener('change', (e) => {
+                let targetPage = parseInt(e.target.value, 10);
+                if (isNaN(targetPage) || targetPage < 1) targetPage = 1;
+                if (targetPage > this.state.reader.totalPages) targetPage = this.state.reader.totalPages;
+                this.goToReaderPage(targetPage);
+            });
+        }
+
+        // زر إضافة أو إزالة علامة مرجعية (Bookmark) للصفحة الحالية
+        const bookmarkBtn = document.getElementById('btn-reader-toggle-bookmark');
+        if (bookmarkBtn) {
+            bookmarkBtn.addEventListener('click', () => {
+                this.toggleCurrentPageBookmark();
+            });
+        }
+
+        // زر فتح درج العلامات المرجعية المحفوظة للقفز السريع
+        const listBookmarksBtn = document.getElementById('btn-reader-open-bookmarks-list');
+        if (listBookmarksBtn) {
+            listBookmarksBtn.addEventListener('click', () => {
+                const drawer = document.getElementById('reader-bookmarks-drawer');
+                if (drawer) {
+                    const willShow = drawer.classList.contains('hidden');
+                    drawer.classList.toggle('hidden', !willShow);
+                    if (willShow) this.renderReaderBookmarksDrawer();
+                }
+            });
+        }
+
+        // زر حفظ الكتاب للقراءة بدون إنترنت داخل ذاكرة التطبيق (IndexedDB Offline Cache)
+        const offlineBtn = document.getElementById('btn-reader-cache-offline');
+        if (offlineBtn) {
+            offlineBtn.addEventListener('click', () => {
+                this.cacheActiveBookForOfflineReading();
+            });
+        }
+
+        // أزرار تكبير وتصغير خط ومقاس صفحة القارئ
+        const zoomInBtn = document.getElementById('btn-reader-font-increase');
+        const zoomOutBtn = document.getElementById('btn-reader-font-decrease');
+        if (zoomInBtn) {
+            zoomInBtn.addEventListener('click', () => this.adjustReaderZoom(0.15));
+        }
+        if (zoomOutBtn) {
+            zoomOutBtn.addEventListener('click', () => this.adjustReaderZoom(-0.15));
+        }
+
+        // منع اختصارات الطباعة أو الحفظ أثناء فتح القارئ المحمي
+        window.addEventListener('keydown', (e) => {
+            const readerModal = document.getElementById('safaqat-protected-reader-modal');
+            if (!readerModal || readerModal.classList.contains('hidden')) return;
+
+            if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'p' || e.key === 'u')) {
+                e.preventDefault();
+                this.showToast('🛡️ المحتوى محمي بحقوق الملكية الفكرية لمنصة صفقات كتابية');
+            } else if (e.key === 'ArrowLeft') {
+                if (this.state.reader.currentPage < this.state.reader.totalPages) {
+                    this.goToReaderPage(this.state.reader.currentPage + 1);
+                }
+            } else if (e.key === 'ArrowRight') {
+                if (this.state.reader.currentPage > 1) {
+                    this.goToReaderPage(this.state.reader.currentPage - 1);
+                }
+            }
+        });
+    },
+
+    // ========================================================================
+    // 2. بوابة التحقق الصارمة للكتب الرقمية (حصر القراءة بالأعضاء + تطبيق الأندرويد)
+    // ========================================================================
+    handleReadOrBuyDigitalBook: function (bookId) {
+        const book = (this.state.books || []).find((b) => b.id === bookId);
+        if (!book) {
+            this.showToast('⚠️ لم يتم العثور على الكتاب المطلوب');
+            return;
+        }
+
+        const settings = window.SafaqatConfig.liveSettings;
+
+        // 1. التحقق الأول: القراءة الرقمية والمكتبة غير متاحة إلا لمن أنشأ حساباً وسجل دخوله
+        if (settings.appProtection.requireAccountForLibrary !== false && !this.state.currentUser) {
+            this.showToast('🔒 ميزة القراءة الرقمية متاحة للأعضاء المسجلين فقط. يرجى تسجيل الدخول أولاً.');
+            this.switchMainView('profile');
+            return;
+        }
+
+        // 2. التحقق الثاني: منع قراءة أو شراء النسخ الرقمية من متصفح الويب وتوجيههم لتطبيق جوجل بلاي
+        // (يُستثنى المدير العام أثناء المعاينة أو المستخدم الذي يفتح من داخل تطبيق الأندرويد)
+        const isInsideAndroidApp = window.SafaqatConfig.isAndroidAppEnvironment();
+        if (settings.appProtection.restrictDigitalBooksToApp && !isInsideAndroidApp && !this.state.isAdmin) {
+            const appGateModal = document.getElementById('modal-app-exclusive-gate');
+            if (appGateModal) {
+                appGateModal.classList.remove('hidden');
+            }
+            return;
+        }
+
+        // 3. التحقق الثالث: هل يملك المستخدم صلاحية قراءة هذا الكتاب الرقمي؟
+        // (إما اشتراه مدى الحياة، أو مشترك في باقة VIP والكتاب مشمول بها، أو سعره الرقمي 0، أو أنه المدير)
+        if (this.doesUserHaveDigitalAccess(book)) {
+            this.openProtectedBookReader(book.id);
+            return;
+        }
+
+        // 4. إذا لم يكن يملكه بعد، نفتح له نافذة الخيار التجاري المزدوج:
+        // (شراء هذا الكتاب الرقمي منفرداً مدى الحياة أو الاشتراك في باقة VIP الشهرية عبر Google Play)
+        this.promptDigitalBookPurchaseOrVipModal(book);
+    },
+
+    doesUserHaveDigitalAccess: function (book) {
+        if (!book) return false;
+        if (this.state.isAdmin) return true;
+        if (!this.state.currentUser || !this.state.userProfile) return false;
+
+        const profile = this.state.userProfile;
+        const ownedList = Array.isArray(profile.ownedDigitalBooks) ? profile.ownedDigitalBooks : [];
+
+        // 1. هل اشترى المستخدم هذا الكتاب الرقمي سابقاً؟
+        if (ownedList.includes(book.id)) return true;
+
+        // 2. هل المستخدم مشترك في باقة VIP الشهرية والكتاب مشمول بها؟
+        const isVipActive = profile.vipSubscription && profile.vipSubscription.active === true;
+        if (isVipActive && book.includedInVip !== false) return true;
+
+        // 3. هل السعر الرقمي للكتاب مجاني للأعضاء المسجلين؟
+        const digPrice = parseFloat(book.digitalPrice ?? book.price ?? 0);
+        if (digPrice <= 0 && book.includedInVip !== true) return true;
+
+        return false;
+    },
+
+    promptDigitalBookPurchaseOrVipModal: function (book) {
+        const modal = document.getElementById('modal-book-details');
+        const contentBox = document.getElementById('modal-book-details-content');
+        if (!modal || !contentBox) return;
+
+        const mon = window.SafaqatConfig.liveSettings.monetization || {};
+        const bookDigitalPrice = window.SafaqatConfig.formatBookPrice(book, 'digital');
+        const vipPrice = window.SafaqatConfig.formatBookPrice({ digitalPrice: mon.vipMonthlyPriceSAR || 29.99 }, 'digital');
+        const safeId = this.escapeHtml(book.id);
+
+        contentBox.innerHTML = `
+            <div class="section-header-row">
+                <h3 style="font-size: 1.05rem; font-weight: 800; color: var(--accent-gold);">
+                    <i class="fa-solid fa-lock-open"></i> اقتناء النسخة الرقمية المحمية
+                </h3>
+                <button type="button" onclick="document.getElementById('modal-book-details').classList.add('hidden')" class="header-icon-btn">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <p style="font-size: 0.86rem; color: var(--text-secondary); margin-bottom: 16px;">
+                اختر الطريقة الأنسب لك لقراءة كتاب <strong>"${this.escapeHtml(book.title)}"</strong> داخل القارئ الذكي المحمي (مع ميزة حفظ الصفحة التلقائي والقراءة بدون إنترنت):
+            </p>
+
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+                ${mon.enableIndividualBookSales !== false ? `
+                    <div style="padding: 14px; border-radius: var(--radius-md); background: var(--bg-input); border: 1px solid var(--border-glass); display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                        <div>
+                            <div style="font-weight: 800; font-size: 0.94rem; color: var(--text-primary);">1. شراء هذا الكتاب الرقمي مدى الحياة</div>
+                            <div style="font-size: 0.78rem; color: var(--text-muted);">يُضاف إلى قسم "مكتبتي" بحسابك للأبد على جميع أجهزتك</div>
+                        </div>
+                        <button type="button" class="btn-add-paper-cart" style="width: auto; padding: 9px 18px;"
+                                onclick="SafaqatApp.executeSingleDigitalBookPurchase('${safeId}')">
+                            شراء بـ ${bookDigitalPrice}
+                        </button>
+                    </div>
+                ` : ''}
+
+                ${mon.enableVipSubscription !== false && book.includedInVip !== false ? `
+                    <div style="padding: 14px; border-radius: var(--radius-md); background: rgba(212, 175, 55, 0.09); border: 1px solid var(--border-gold); display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                        <div>
+                            <div style="font-weight: 800; font-size: 0.94rem; color: var(--accent-gold);">
+                                <i class="fa-solid fa-crown"></i> 2. ${this.escapeHtml(mon.vipPlanName || 'باقة القارئ الشغوف (VIP)')}
+                            </div>
+                            <div style="font-size: 0.78rem; color: var(--text-secondary);">قراءة مفتوحة لهذا الكتاب ولجميع الكتب الرقمية المشمولة طوال الشهر</div>
+                        </div>
+                        <button type="button" class="btn-read-digital-app" style="width: auto; padding: 9px 18px; border-color: var(--accent-gold); color: var(--accent-gold);"
+                                onclick="document.getElementById('modal-book-details').classList.add('hidden'); SafaqatApp.handleVipSubscriptionRequest();">
+                            اشتراك بـ ${vipPrice} / شهرياً
+                        </button>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+
+        modal.classList.remove('hidden');
+    },
+
+    executeSingleDigitalBookPurchase: async function (bookId) {
+        const book = (this.state.books || []).find((b) => b.id === bookId);
+        if (!book || !this.state.currentUser) return;
+
+        const billing = (window.SafaqatConfig.liveSettings.monetization || {}).googlePlayBilling || {};
+        const sku = book.googlePlaySku || `${billing.bookSkuPrefix || 'safaqat_ebook_'}${book.id}`;
+
+        // إذا كان التطبيق مربوطاً بجسر فوترة Google Play Billing الأصلي
+        if (billing.enabled && window.SafaqatNativeBridge && typeof window.SafaqatNativeBridge.purchaseDigitalBook === 'function') {
+            window.SafaqatNativeBridge.purchaseDigitalBook(sku, book.id);
+            return;
+        }
+
+        // إضافة الكتاب إلى مكتبة المستخدم أو توجيه طلب التفعيل السريع
+        try {
+            const userRef = window.db.collection(window.SAFAQAT_COLLECTIONS.USERS).doc(this.state.currentUser.uid);
+            await userRef.set({
+                ownedDigitalBooks: firebase.firestore.FieldValue.arrayUnion(book.id)
+            }, { merge: true });
+
+            document.getElementById('modal-book-details').classList.add('hidden');
+            this.showToast(`🎉 تمت إضافة "${book.title}" إلى مكتبتك الرقمية بنجاح!`);
+            this.openProtectedBookReader(book.id);
+        } catch (err) {
+            this.showToast('⚠️ تعذر تفعيل النسخة الرقمية: ' + err.message);
+        }
+    },
+
+    // ========================================================================
+    // 3. قسم "مكتبتي الرقمية الآمنة" وسجل التقدم في القراءة
+    // ========================================================================
+    renderUserDigitalLibrary: function () {
+        const guestLockBox = document.getElementById('library-guest-lock-box');
+        const libraryGrid = document.getElementById('user-digital-library-grid');
+        const vipStatusPill = document.getElementById('library-vip-status-pill');
+
+        if (!libraryGrid || !guestLockBox) return;
+
+        // إذا لم يكن المستخدم مسجلاً، نخفي الكتب ونظهر قفل التسجيل الإلزامي
+        if (!this.state.currentUser || !this.state.userProfile) {
+            guestLockBox.classList.remove('hidden');
+            libraryGrid.innerHTML = '';
+            if (vipStatusPill) vipStatusPill.innerHTML = '';
+            return;
+        }
+
+        guestLockBox.classList.add('hidden');
+        const profile = this.state.userProfile;
+        const isVip = profile.vipSubscription && profile.vipSubscription.active === true;
+
+        if (vipStatusPill) {
+            vipStatusPill.innerHTML = isVip
+                ? `<span class="badge-pill badge-paper-available"><i class="fa-solid fa-crown"></i> باقة VIP نشطة</span>`
+                : `<button type="button" class="category-chip-item active" onclick="SafaqatApp.switchMainView('profile')">ترقية لباقة VIP</button>`;
+        }
+
+        // جمع الكتب المتاحة للمستخدم في مكتبته الرقمية
+        const allBooks = this.state.books || [];
+        const accessibleBooks = allBooks.filter((b) => {
+            const hasDigital = b.isDigitalOnly === true || Boolean(b.pdfDirectUrl) || Boolean(b.digitalContent) || b.hasDigitalEdition !== false;
+            return hasDigital && this.doesUserHaveDigitalAccess(b);
+        });
+
+        if (accessibleBooks.length === 0) {
+            libraryGrid.innerHTML = `
+                <div class="glass-section-card" style="grid-column: 1 / -1; text-align: center; padding: 36px 18px;">
+                    <i class="fa-solid fa-book-bookmark" style="font-size: 2.3rem; color: var(--accent-gold); margin-bottom: 10px;"></i>
+                    <h4 style="font-size: 1rem; margin-bottom: 6px;">مكتبتك الرقمية فارغة حالياً</h4>
+                    <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 14px;">
+                        اقتنِ أي نسخة رقمية من المتجر أو اشترك في باقة القارئ الشغوف (VIP) لتظهر جميع كتبك هنا مع الحفظ التلقائي للصفحات.
+                    </p>
+                    <button type="button" class="btn-add-paper-cart" style="width: auto; margin: 0 auto; padding: 9px 22px;" onclick="SafaqatApp.switchMainView('store')">
+                        استكشف الكتب الرقمية
+                    </button>
+                </div>
+            `;
+            return;
+        }
+
+        const progressMap = profile.readingProgress || {};
+
+        libraryGrid.innerHTML = accessibleBooks.map((book) => {
+            const safeId = this.escapeHtml(book.id);
+            const coverUrl = book.coverUrl || 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&w=600&q=80';
+            const savedProg = progressMap[book.id] || this.getLocalReadingProgress(book.id);
+            const currentPage = savedProg && savedProg.page ? savedProg.page : 1;
+            const totalPages = savedProg && savedProg.total ? savedProg.total : (book.pagesCount || 1);
+            const percent = totalPages > 1 ? Math.min(100, Math.round((currentPage / totalPages) * 100)) : 0;
+
+            return `
+                <article class="book-glass-card">
+                    <div class="book-cover-wrapper" onclick="SafaqatApp.handleReadOrBuyDigitalBook('${safeId}')">
+                        <img src="${this.escapeHtml(coverUrl)}" alt="${this.escapeHtml(book.title)}" loading="lazy">
+                        <div class="book-badges-overlay">
+                            <span class="badge-pill badge-stock-count">
+                                ${currentPage > 1 ? `وصلت لصفحة ${currentPage}` : 'ابدأ القراءة'}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="book-card-body">
+                        <h3 class="book-card-title">${this.escapeHtml(book.title)}</h3>
+                        <div class="book-card-author">${this.escapeHtml(book.author || '')}</div>
+
+                        <!-- شريط نسبة الإنجاز في القراءة -->
+                        <div style="margin-top: 6px; background: var(--bg-input); height: 6px; border-radius: 99px; overflow: hidden;">
+                            <div style="width: ${percent}%; height: 100%; background: var(--accent-gold);"></div>
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted); display: flex; justify-content: space-between;">
+                            <span>تقدمك: ${percent}%</span>
+                            <span>صفحة ${currentPage}</span>
+                        </div>
+
+                        <div class="book-card-actions">
+                            <button type="button" class="btn-add-paper-cart" onclick="SafaqatApp.handleReadOrBuyDigitalBook('${safeId}')">
+                                <i class="fa-solid fa-bolt"></i>
+                                <span>${currentPage > 1 ? `متابعة من صفحة ${currentPage}` : 'فتح القارئ الآمن'}</span>
+                            </button>
+                        </div>
+                    </div>
+                </article>
+            `;
+        }).join('');
+    },
+
+    renderUserReadingProgressSummary: function () {
+        const container = document.getElementById('profile-reading-progress-list');
+        if (!container) return;
+
+        if (!this.state.currentUser || !this.state.userProfile) {
+            container.innerHTML = `<div style="font-size: 0.8rem; color: var(--text-muted);">سجل دخولك لعرض سجل قراءتك وفواتيرك.</div>`;
+            return;
+        }
+
+        const progressMap = this.state.userProfile.readingProgress || {};
+        const bookIds = Object.keys(progressMap);
+
+        if (bookIds.length === 0) {
+            container.innerHTML = `<div style="font-size: 0.8rem; color: var(--text-muted);">لم تبدأ قراءة أي كتاب رقمي بعد. عندما تقرأ أي كتاب سيتم حفظ رقم صفحتك هنا تلقائياً.</div>`;
+            return;
+        }
+
+        container.innerHTML = bookIds.map((bId) => {
+            const prog = progressMap[bId];
+            const book = (this.state.books || []).find((b) => b.id === bId);
+            const title = book ? book.title : (prog.bookTitle || 'كتاب رقمي');
+            return `
+                <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px; border-radius: var(--radius-sm); background: var(--bg-input); border: 1px solid var(--border-glass); margin-bottom: 8px;">
+                    <div>
+                        <div style="font-weight: 800; font-size: 0.86rem; color: var(--accent-gold);">${this.escapeHtml(title)}</div>
+                        <div style="font-size: 0.75rem; color: var(--text-secondary);">توقفت عند الصفحة <strong>${prog.page || 1}</strong> من ${prog.total || '?'}</div>
+                    </div>
+                    <button type="button" class="category-chip-item active" onclick="SafaqatApp.handleReadOrBuyDigitalBook('${this.escapeHtml(bId)}')">
+                        قفز مباشر للصفحة <i class="fa-solid fa-bolt"></i>
+                    </button>
+                </div>
+            `;
+        }).join('');
+    },
+
+    // ========================================================================
+    // 4. القارئ الآمن الاحترافي المحمي + القفز التلقائي الفوري لآخر صفحة (Auto-Jump)
+    // ========================================================================
+    openProtectedBookReader: async function (bookId) {
+        const book = (this.state.books || []).find((b) => b.id === bookId);
+        if (!book) {
+            this.showToast('⚠️ تعذر العثور على بيانات الكتاب');
+            return;
+        }
+
+        const modal = document.getElementById('safaqat-protected-reader-modal');
+        const titleEl = document.getElementById('reader-book-title');
+        const loadingEl = document.getElementById('reader-loading-state');
+        const pdfCanvas = document.getElementById('reader-pdf-canvas');
+        const textContainer = document.getElementById('reader-text-container');
+        const autoJumpBanner = document.getElementById('reader-autojump-notification');
+        const bookmarksDrawer = document.getElementById('reader-bookmarks-drawer');
+
+        if (!modal) return;
+
+        // تهيئة حالة القارئ للكتاب المختار
+        this.state.reader.activeBook = book;
+        this.state.reader.pdfDoc = null;
+        this.state.reader.currentPage = 1;
+        this.state.reader.totalPages = 1;
+        this.state.reader.bookmarks = this.loadBookBookmarks(book.id);
+
+        if (titleEl) titleEl.textContent = book.title;
+        if (loadingEl) loadingEl.classList.remove('hidden');
+        if (pdfCanvas) pdfCanvas.classList.add('hidden');
+        if (textContainer) textContainer.classList.add('hidden');
+        if (autoJumpBanner) autoJumpBanner.classList.add('hidden');
+        if (bookmarksDrawer) bookmarksDrawer.classList.add('hidden');
+
+        modal.classList.remove('hidden');
+
+        // 1. جلب آخر صفحة توقف عندها المستخدم (من السحابة أو التخزين المحلي) للقفز التلقائي الفوري!
+        const savedProgress = this.getSavedPageForBook(book.id);
+        const targetAutoJumpPage = savedProgress && savedProgress.page > 1 ? parseInt(savedProgress.page, 10) : 1;
+
+        // 2. فحص ما إذا كان الكتاب محفوظاً مسبقاً في الخزنة المحلية بدون إنترنت (IndexedDB)
+        const offlineData = await this.getOfflineCachedBook(book.id);
+        const offlineIcon = document.getElementById('reader-offline-icon');
+        if (offlineIcon) {
+            offlineIcon.className = offlineData ? 'fa-solid fa-circle-check' : 'fa-solid fa-cloud-arrow-down';
+            offlineIcon.style.color = offlineData ? 'var(--accent-emerald)' : '';
+        }
+
+        // 3. تجهيز محتوى الكتاب (إما ملف PDF عبر PDF.js أو فصول/صفحات نصية مقسمة بدقة)
+        const rawPdfUrl = (offlineData && offlineData.pdfDirectUrl) || (book.pdfDirectUrl || '').trim();
+        const normalizedPdfUrl = this.normalizeCloudPdfUrl(rawPdfUrl);
+
+        if (normalizedPdfUrl && window.pdfjsLib) {
+            try {
+                const loadingTask = window.pdfjsLib.getDocument({
+                    url: normalizedPdfUrl,
+                    withCredentials: false
+                });
+                const pdfDoc = await loadingTask.promise;
+                this.state.reader.pdfDoc = pdfDoc;
+                this.state.reader.totalPages = pdfDoc.numPages;
+
+                if (loadingEl) loadingEl.classList.add('hidden');
+                if (pdfCanvas) pdfCanvas.classList.remove('hidden');
+
+                // القفز التلقائي الفوري (Auto-Jump) إلى الصفحة التي توقف عندها المستخدم!
+                const validJumpPage = Math.min(Math.max(1, targetAutoJumpPage), pdfDoc.numPages);
+                await this.goToReaderPage(validJumpPage, validJumpPage > 1);
+                return;
+            } catch (pdfErr) {
+                console.warn("⚠️ تعذر الجلب المباشر لملف PDF عبر CORS، جاري استخدام العارض المحمي البديل:", pdfErr);
+                // إذا كان الرابط من Google Drive ويمنع قراءة الـ Canvas عبر CORS، نتحول للعارض المدمج أو الصفحات النصية
+                if (rawPdfUrl.includes('drive.google.com')) {
+                    this.renderGoogleDriveProtectedEmbed(rawPdfUrl, targetAutoJumpPage);
+                    return;
+                }
+            }
+        }
+
+        // 4. عرض الكتاب المقسم إلى صفحات نصية احترافية (يدعم القفز التلقائي الفوري لأي صفحة 5، 100، 200...)
+        this.preparePaginatedTextBook(book, offlineData);
+        if (loadingEl) loadingEl.classList.add('hidden');
+        if (textContainer) textContainer.classList.remove('hidden');
+
+        const validPage = Math.min(Math.max(1, targetAutoJumpPage), this.state.reader.totalPages);
+        await this.goToReaderPage(validPage, validPage > 1);
+    },
+
+    /**
+     * الانتقال الفوري الفعلي إلى الصفحة المطلوبة (Auto-Jump & Page Navigation)
+     * ينقل القارئ مباشرة إلى الصفحة (وليس مجرد إظهار رقمها نصياً)
+     */
+    goToReaderPage: async function (pageNumber, isAutoJump = false) {
+        const book = this.state.reader.activeBook;
+        if (!book) return;
+
+        const targetPage = Math.min(Math.max(1, parseInt(pageNumber, 10) || 1), this.state.reader.totalPages);
+        this.state.reader.currentPage = targetPage;
+
+        // تحديث شريط الأرقام السفلي
+        const pageInput = document.getElementById('reader-direct-page-input');
+        const totalLabel = document.getElementById('reader-total-pages-label');
+        if (pageInput) pageInput.value = targetPage;
+        if (totalLabel) totalLabel.textContent = this.state.reader.totalPages;
+
+        // أ) إذا كان الكتاب يعمل بمحرك PDF.js Canvas
+        if (this.state.reader.pdfDoc) {
+            await this.renderPdfCanvasPage(targetPage);
+        } else {
+            // ب) إذا كان الكتاب يعمل بمحرك الصفحات الأدبية المقسمة
+            this.renderPaginatedTextPage(targetPage);
+        }
+
+        // تمرير منطقة القراءة إلى أعلى الصفحة الجديدة بسلاسة
+        const viewport = document.getElementById('reader-main-viewport');
+        if (viewport) viewport.scrollTop = 0;
+
+        // تحديث حالة أيقونة العلامة المرجعية (Bookmark) لهذه الصفحة
+        this.updateBookmarkIconState();
+
+        // حفظ الصفحة الحالية فوراً في السحابة والذاكرة المحلية
+        this.saveCurrentReadingProgress(book.id, targetPage, this.state.reader.totalPages);
+
+        // إظهار شريط تأكيد القفز التلقائي الفوري إذا تم نقله تلقائياً عند فتح الكتاب
+        if (isAutoJump && targetPage > 1) {
+            const banner = document.getElementById('reader-autojump-notification');
+            const bannerText = document.getElementById('reader-autojump-text');
+            if (banner && bannerText) {
+                bannerText.innerHTML = `<i class="fa-solid fa-bolt"></i> تم نقلك تلقائياً ومباشرة إلى <strong>الصفحة (${targetPage})</strong> حيث توقفت آخر مرة!`;
+                banner.classList.remove('hidden');
+            }
+        }
+    },
+
+    renderPdfCanvasPage: async function (pageNum) {
+        if (!this.state.reader.pdfDoc) return;
+        if (this.state.reader.isRendering) {
+            this.state.reader.pendingPage = pageNum;
+            return;
+        }
+
+        this.state.reader.isRendering = true;
+        const canvas = document.getElementById('reader-pdf-canvas');
+        if (!canvas) {
+            this.state.reader.isRendering = false;
+            return;
+        }
+
+        try {
+            const page = await this.state.reader.pdfDoc.getPage(pageNum);
+            const viewport = page.getViewport({ scale: this.state.reader.scale || 1.35 });
+            const ctx = canvas.getContext('2d');
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+
+            await page.render({
+                canvasContext: ctx,
+                viewport: viewport
+            }).promise;
+        } catch (err) {
+            console.error("PDF Page Render Error:", err);
+        }
+
+        this.state.reader.isRendering = false;
+        if (this.state.reader.pendingPage !== null) {
+            const next = this.state.reader.pendingPage;
+            this.state.reader.pendingPage = null;
+            this.renderPdfCanvasPage(next);
+        }
+    },
+
+    preparePaginatedTextBook: function (book, offlineData) {
+        const rawContent = (offlineData && offlineData.digitalContent) ||
+                           book.digitalContent ||
+                           book.description ||
+                           'هذا الكتاب محمي بحقوق النشر لمنصة صفقات كتابية.';
+
+        // تقسيم المحتوى إلى صفحات حقيقية منظمة (أو استخدام فواصل الصفحات المخصصة ---PAGE---)
+        let pagesArray = [];
+        if (rawContent.includes('---PAGE---')) {
+            pagesArray = rawContent.split('---PAGE---').map((p) => p.trim()).filter(Boolean);
+        } else {
+            // تقسيم ذكي كل 1100 حرف في صفحة مستقلة لضمان تعدد الصفحات ودقة القفز التلقائي
+            const paragraphs = rawContent.split(/\n+/);
+            let currentChunk = '';
+            paragraphs.forEach((para) => {
+                if ((currentChunk.length + para.length) > 1100 && currentChunk.length > 0) {
+                    pagesArray.push(currentChunk.trim());
+                    currentChunk = para + '\n\n';
+                } else {
+                    currentChunk += para + '\n\n';
+                }
+            });
+            if (currentChunk.trim().length > 0) {
+                pagesArray.push(currentChunk.trim());
+            }
+        }
+
+        if (pagesArray.length === 0) {
+            pagesArray = [rawContent];
+        }
+
+        this.state.reader.textPages = pagesArray;
+        this.state.reader.totalPages = pagesArray.length;
+    },
+
+    renderPaginatedTextPage: function (pageNum) {
+        const textContainer = document.getElementById('reader-text-container');
+        if (!textContainer) return;
+
+        const pages = this.state.reader.textPages || [''];
+        const pageContent = pages[pageNum - 1] || pages[0] || '';
+        const fontSizeRem = this.state.reader.fontSize || 1.25;
+
+        textContainer.style.fontSize = `${fontSizeRem}rem`;
+        textContainer.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; margin-bottom: 18px; border-bottom: 1px dashed var(--border-glass); font-size: 0.78rem; color: var(--accent-gold); font-family: var(--font-main);">
+                <span>📖 ${this.escapeHtml(this.state.reader.activeBook ? this.state.reader.activeBook.title : '')}</span>
+                <span>الصفحة ${pageNum} من ${this.state.reader.totalPages}</span>
+            </div>
+            <div style="white-space: pre-line; text-align: justify;">${this.escapeHtml(pageContent)}</div>
+        `;
+    },
+
+    renderGoogleDriveProtectedEmbed: function (driveUrl, targetPage) {
+        const loadingEl = document.getElementById('reader-loading-state');
+        const textContainer = document.getElementById('reader-text-container');
+        if (loadingEl) loadingEl.classList.add('hidden');
+        if (!textContainer) return;
+
+        // استخراج معرف ملف جوجل درايف وتحويله إلى وضع المعاينة المحمية داخل التطبيق
+        const match = driveUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || driveUrl.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+        const fileId = match ? match[1] : null;
+        const embedUrl = fileId
+            ? `https://drive.google.com/file/d/${fileId}/preview`
+            : driveUrl;
+
+        this.state.reader.totalPages = parseInt(this.state.reader.activeBook.pagesCount, 10) || 250;
+        this.state.reader.currentPage = targetPage || 1;
+
+        const pageInput = document.getElementById('reader-direct-page-input');
+        const totalLabel = document.getElementById('reader-total-pages-label');
+        if (pageInput) pageInput.value = this.state.reader.currentPage;
+        if (totalLabel) totalLabel.textContent = this.state.reader.totalPages;
+
+        textContainer.classList.remove('hidden');
+        textContainer.innerHTML = `
+            <div style="position: relative; width: 100%; height: 70vh; border-radius: 10px; overflow: hidden;">
+                <iframe src="${this.escapeHtml(embedUrl)}" 
+                        style="width: 100%; height: 100%; border: none;" 
+                        allow="autoplay" sandbox="allow-scripts allow-same-origin"></iframe>
+                <!-- طبقة حماية علوية تمنع زر الفتح الخارجي أو التحميل من جوجل درايف -->
+                <div style="position: absolute; top: 0; left: 0; width: 80px; height: 60px; background: #131b2e; z-index: 20; display: flex; align-items: center; justify-content: center; border-bottom-right-radius: 12px;">
+                    <i class="fa-solid fa-shield-halved" style="color: var(--accent-gold);"></i>
+                </div>
+            </div>
+        `;
+
+        if (targetPage > 1) {
+            const banner = document.getElementById('reader-autojump-notification');
+            const bannerText = document.getElementById('reader-autojump-text');
+            if (banner && bannerText) {
+                bannerText.innerHTML = `<i class="fa-solid fa-bolt"></i> موضع توقفك المحفوظ هو <strong>الصفحة (${targetPage})</strong>`;
+                banner.classList.remove('hidden');
+            }
+        }
+    },
+
+    normalizeCloudPdfUrl: function (url) {
+        if (!url) return '';
+        // إذا كان رابط مباشر ينتهي بـ .pdf أو رابط سحابي يدعم الجلب المباشر
+        return url.trim();
+    },
+
+    adjustReaderZoom: function (delta) {
+        if (this.state.reader.pdfDoc) {
+            this.state.reader.scale = Math.min(2.4, Math.max(0.8, (this.state.reader.scale || 1.35) + delta));
+            this.renderPdfCanvasPage(this.state.reader.currentPage);
+        } else {
+            this.state.reader.fontSize = Math.min(2.0, Math.max(0.95, (this.state.reader.fontSize || 1.25) + delta));
+            this.renderPaginatedTextPage(this.state.reader.currentPage);
+        }
+    },
+
+    closeProtectedBookReader: function () {
+        const book = this.state.reader.activeBook;
+        if (book) {
+            this.saveCurrentReadingProgress(book.id, this.state.reader.currentPage, this.state.reader.totalPages);
+            this.showToast(`📌 تم حفظ توقفك عند الصفحة (${this.state.reader.currentPage}) للقفز التلقائي عند عودتك`);
+        }
+        const modal = document.getElementById('safaqat-protected-reader-modal');
+        if (modal) modal.classList.add('hidden');
+        if (this.state.currentView === 'library') {
+            this.renderUserDigitalLibrary();
+        }
+    },
+
+    // ========================================================================
+    // 5. حفظ واسترجاع رقم الصفحة والعلامات المرجعية (Auto-Jump & Bookmarks Storage)
+    // ========================================================================
+    getSavedPageForBook: function (bookId) {
+        // أولاً من ملف المستخدم السحابي المتزامن عبر الأجهزة
+        if (this.state.userProfile && this.state.userProfile.readingProgress && this.state.userProfile.readingProgress[bookId]) {
+            return this.state.userProfile.readingProgress[bookId];
+        }
+        // ثانياً من الذاكرة المحلية السريعة
+        return this.getLocalReadingProgress(bookId);
+    },
+
+    getLocalReadingProgress: function (bookId) {
+        try {
+            const raw = localStorage.getItem(`safaqat_reader_prog_${bookId}`);
+            return raw ? JSON.parse(raw) : null;
+        } catch (e) {
+            return null;
+        }
+    },
+
+    saveCurrentReadingProgress: function (bookId, pageNumber, totalPages) {
+        if (!bookId) return;
+        const book = this.state.reader.activeBook;
+        const progObj = {
+            page: pageNumber,
+            total: totalPages || 1,
+            bookTitle: book ? book.title : '',
+            updatedAt: Date.now()
+        };
+
+        // 1. حفظ فوري في الذاكرة المحلية (يعمل حتى بدون إنترنت)
+        localStorage.setItem(`safaqat_reader_prog_${bookId}`, JSON.stringify(progObj));
+
+        // 2. مزامنة سحابية في حساب المستخدم على Firestore ليفتح من أي جوال آخر ويجد نفس الصفحة
+        if (this.state.currentUser && window.db) {
+            if (!this.state.userProfile) this.state.userProfile = {};
+            if (!this.state.userProfile.readingProgress) this.state.userProfile.readingProgress = {};
+            this.state.userProfile.readingProgress[bookId] = progObj;
+
+            window.db.collection(window.SAFAQAT_COLLECTIONS.USERS).doc(this.state.currentUser.uid).set({
+                readingProgress: {
+                    [bookId]: progObj
+                }
+            }, { merge: true }).catch(() => {});
+        }
+    },
+
+    loadBookBookmarks: function (bookId) {
+        try {
+            const raw = localStorage.getItem(`safaqat_bookmarks_${bookId}`);
+            return raw ? JSON.parse(raw) : [];
+        } catch (e) {
+            return [];
+        }
+    },
+
+    saveBookBookmarks: function (bookId, bookmarksArray) {
+        localStorage.setItem(`safaqat_bookmarks_${bookId}`, JSON.stringify(bookmarksArray));
+    },
+
+    updateBookmarkIconState: function () {
+        const icon = document.getElementById('reader-bookmark-icon');
+        if (!icon) return;
+        const currPage = this.state.reader.currentPage;
+        const exists = (this.state.reader.bookmarks || []).some((bm) => bm.page === currPage);
+        icon.className = exists ? 'fa-solid fa-bookmark' : 'fa-regular fa-bookmark';
+        icon.style.color = exists ? 'var(--accent-gold)' : '';
+    },
+
+    toggleCurrentPageBookmark: function () {
+        const book = this.state.reader.activeBook;
+        if (!book) return;
+
+        const currPage = this.state.reader.currentPage;
+        let list = [...(this.state.reader.bookmarks || [])];
+        const idx = list.findIndex((bm) => bm.page === currPage);
+
+        if (idx > -1) {
+            list.splice(idx, 1);
+            this.showToast(`🗑️ تمت إزالة العلامة المرجعية من الصفحة (${currPage})`);
+        } else {
+            list.push({
+                page: currPage,
+                label: `علامة محفوظة — صفحة ${currPage}`,
+                createdAt: new Date().toLocaleDateString('ar-SA')
+            });
+            list.sort((a, b) => a.page - b.page);
+            this.showToast(`📌 تم حفظ علامة مرجعية عند الصفحة (${currPage})`);
+        }
+
+        this.state.reader.bookmarks = list;
+        this.saveBookBookmarks(book.id, list);
+        this.updateBookmarkIconState();
+        this.renderReaderBookmarksDrawer();
+    },
+
+    renderReaderBookmarksDrawer: function () {
+        const container = document.getElementById('reader-bookmarks-items-container');
+        if (!container) return;
+
+        const list = this.state.reader.bookmarks || [];
+        if (list.length === 0) {
+            container.innerHTML = `<div style="font-size: 0.78rem; color: var(--text-muted);">لم تقم بحفظ أي علامات مرجعية في هذا الكتاب بعد. اضغط على أيقونة الإشارة المرجعية في الأعلى لحفظ أي صفحة.</div>`;
+            return;
+        }
+
+        container.innerHTML = list.map((bm) => `
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border-glass); margin-bottom: 6px; cursor: pointer;"
+                 onclick="SafaqatApp.goToReaderPage(${bm.page}); document.getElementById('reader-bookmarks-drawer').classList.add('hidden');">
+                <div>
+                    <strong style="font-size: 0.82rem; color: var(--accent-gold);">📌 ${this.escapeHtml(bm.label)}</strong>
+                    <span style="font-size: 0.7rem; color: var(--text-muted); margin-right: 8px;">${this.escapeHtml(bm.createdAt || '')}</span>
+                </div>
+                <span class="badge-pill badge-stock-count">انتقال فوري <i class="fa-solid fa-bolt"></i></span>
+            </div>
+        `).join('');
+    },
+
+    // ========================================================================
+    // 6. الخزنة المحلية للقراءة بدون إنترنت داخل التطبيق (IndexedDB Offline Vault)
+    // ========================================================================
+    openOfflineVaultDB: function () {
+        return new Promise((resolve, reject) => {
+            if (!window.indexedDB) {
+                reject(new Error("المتصفح لا يدعم IndexedDB"));
+                return;
+            }
+            const request = window.indexedDB.open('SafaqatOfflineVaultDB', 1);
+            request.onupgradeneeded = (e) => {
+                const idb = e.target.result;
+                if (!idb.objectStoreNames.contains('offline_books')) {
+                    idb.createObjectStore('offline_books', { keyPath: 'id' });
+                }
+            };
+            request.onsuccess = (e) => resolve(e.target.result);
+            request.onerror = (e) => reject(e.target.error);
+        });
+    },
+
+    cacheActiveBookForOfflineReading: async function () {
+        const book = this.state.reader.activeBook;
+        if (!book) return;
+
+        try {
+            const idb = await this.openOfflineVaultDB();
+            const tx = idb.transaction('offline_books', 'readwrite');
+            const store = tx.objectStore('offline_books');
+
+            store.put({
+                id: book.id,
+                title: book.title,
+                author: book.author || '',
+                digitalContent: book.digitalContent || book.description || '',
+                pdfDirectUrl: book.pdfDirectUrl || '',
+                cachedAt: Date.now()
+            });
+
+            const offlineIcon = document.getElementById('reader-offline-icon');
+            if (offlineIcon) {
+                offlineIcon.className = 'fa-solid fa-circle-check';
+                offlineIcon.style.color = 'var(--accent-emerald)';
+            }
+
+            this.showToast('☁️ تم حفظ الكتاب في الخزنة المحلية المشفرة للقراءة بدون إنترنت!');
+        } catch (err) {
+            console.warn("Offline Cache Error:", err);
+            this.showToast('⚠️ تعذر حفظ النسخة المحلية على هذا المتصفح');
+        }
+    },
+
+    getOfflineCachedBook: async function (bookId) {
+        try {
+            const idb = await this.openOfflineVaultDB();
+            return await new Promise((resolve) => {
+                const tx = idb.transaction('offline_books', 'readonly');
+                const store = tx.objectStore('offline_books');
+                const req = store.get(bookId);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => resolve(null);
+            });
+        } catch (e) {
+            return null;
+        }
+    }
+
+});
